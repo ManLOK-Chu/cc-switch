@@ -12,6 +12,8 @@ import {
   type InstalledSkill,
   type SkillUpdateInfo,
   type SkillsShSearchResult,
+  type SkillGroup,
+  type SkillGroupMember,
 } from "@/lib/api/skills";
 import type { AppId } from "@/lib/api/types";
 import { mergeImportedSkills } from "@/hooks/useSkills.helpers";
@@ -345,6 +347,174 @@ export function useSearchSkillsSh(
   });
 }
 
+// ========== Skill Groups ==========
+
+/**
+ * 查询所有 Skill 分组
+ */
+export function useSkillGroups() {
+  return useQuery({
+    queryKey: ["skills", "groups"],
+    queryFn: () => skillsApi.getGroups(),
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * 创建 Skill 分组
+ */
+export function useCreateSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => skillsApi.createGroup(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills", "groups"] });
+    },
+  });
+}
+
+/**
+ * 更新 Skill 分组名称
+ */
+export function useUpdateSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      skillsApi.updateGroup(id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills", "groups"] });
+    },
+  });
+}
+
+/**
+ * 删除 Skill 分组
+ */
+export function useDeleteSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => skillsApi.deleteGroup(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills", "groups"] });
+      queryClient.invalidateQueries({ queryKey: ["skills", "groupMembers"] });
+    },
+  });
+}
+
+/**
+ * 重新排序 Skill 分组
+ */
+export function useReorderSkillGroups() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => skillsApi.reorderGroups(ids),
+    onSuccess: (_data, ids) => {
+      queryClient.setQueryData<SkillGroup[]>(["skills", "groups"], (old) => {
+        if (!old) return old;
+        const map = new Map(old.map((g) => [g.id, g]));
+        return ids
+          .map((id, index) => {
+            const group = map.get(id);
+            return group ? { ...group, sortIndex: index } : null;
+          })
+          .filter((g): g is SkillGroup => g !== null);
+      });
+    },
+  });
+}
+
+/**
+ * 查询所有 Skill 分组关联关系
+ */
+export function useSkillGroupMembers() {
+  return useQuery({
+    queryKey: ["skills", "groupMembers"],
+    queryFn: () => skillsApi.getGroupMembers(),
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * 将 Skill 添加到分组
+ */
+export function useAddSkillToGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      skillId,
+      groupId,
+    }: {
+      skillId: string;
+      groupId: string;
+    }) => skillsApi.addSkillToGroup(skillId, groupId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills", "groupMembers"] });
+    },
+  });
+}
+
+/**
+ * 将 Skill 从分组中移除
+ */
+export function useRemoveSkillFromGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) => skillsApi.removeSkillFromGroup(skillId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills", "groupMembers"] });
+    },
+  });
+}
+
+/**
+ * 移动 Skill 到指定分组
+ */
+export function useMoveSkillToGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      skillId,
+      groupId,
+    }: {
+      skillId: string;
+      groupId: string | null;
+    }) => skillsApi.moveSkillToGroup(skillId, groupId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skills", "groupMembers"] });
+    },
+  });
+}
+
+/**
+ * 按分组批量启用/停用 Skills
+ */
+export function useBatchToggleGroupApps() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      groupId,
+      app,
+      enabled,
+    }: {
+      groupId: string;
+      app: AppId;
+      enabled: boolean;
+    }) => skillsApi.batchToggleGroupApps(groupId, app, enabled),
+    onSuccess: (updatedSkills) => {
+      queryClient.setQueryData<InstalledSkill[]>(
+        ["skills", "installed"],
+        (oldData) => {
+          if (!oldData) return updatedSkills;
+          const updatedMap = new Map(updatedSkills.map((s) => [s.id, s]));
+          return oldData.map((s) => updatedMap.get(s.id) ?? s);
+        },
+      );
+    },
+  });
+}
+
 // ========== 辅助类型 ==========
 
 export type {
@@ -354,5 +524,7 @@ export type {
   SkillBackupEntry,
   SkillUpdateInfo,
   SkillsShSearchResult,
+  SkillGroup,
+  SkillGroupMember,
   AppId,
 };
