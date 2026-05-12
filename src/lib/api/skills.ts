@@ -131,6 +131,20 @@ export interface SkillRepo {
   enabled: boolean;
 }
 
+/** Skill 分组 */
+export interface SkillGroup {
+  id: string;
+  name: string;
+  sortIndex: number;
+  createdAt: number;
+}
+
+/** Skill 与分组的关联 */
+export interface SkillGroupMember {
+  skillId: string;
+  groupId: string;
+}
+
 // ========== API ==========
 
 export const skillsApi = {
@@ -279,5 +293,64 @@ export const skillsApi = {
     currentApp: AppId,
   ): Promise<InstalledSkill[]> {
     return await invoke("install_skills_from_zip", { filePath, currentApp });
+  },
+
+  // ========== 分组管理 ==========
+
+  /** 获取所有 Skill 分组 */
+  async getGroups(): Promise<SkillGroup[]> {
+    return await invoke("get_skill_groups");
+  },
+
+  /** 创建 Skill 分组 */
+  async createGroup(name: string): Promise<SkillGroup> {
+    return await invoke("create_skill_group", { name });
+  },
+
+  /** 更新 Skill 分组名称 */
+  async updateGroup(id: string, name: string): Promise<SkillGroup> {
+    return await invoke("update_skill_group", { id, name });
+  },
+
+  /** 删除 Skill 分组 */
+  async deleteGroup(id: string): Promise<boolean> {
+    return await invoke("delete_skill_group", { id });
+  },
+
+  /** 重新排序 Skill 分组 */
+  async reorderGroups(ids: string[]): Promise<boolean> {
+    return await invoke("reorder_skill_groups", { ids });
+  },
+
+  /** 获取所有 Skill 分组关联关系 */
+  async getGroupMembers(): Promise<SkillGroupMember[]> {
+    return await invoke("get_skill_group_members");
+  },
+
+  /** 将 Skill 添加到分组 */
+  async addSkillToGroup(skillId: string, groupId: string): Promise<boolean> {
+    return await invoke("add_skill_to_group", { skillId, groupId });
+  },
+
+  /** 将 Skill 从分组中移除 */
+  async removeSkillFromGroup(skillId: string): Promise<boolean> {
+    return await invoke("remove_skill_from_group", { skillId });
+  },
+
+  /** 移动 Skill 到指定分组 */
+  async moveSkillToGroup(
+    skillId: string,
+    groupId: string | null,
+  ): Promise<boolean> {
+    return await invoke("move_skill_to_group", { skillId, groupId });
+  },
+
+  /** 按分组批量启用/停用 Skills */
+  async batchToggleGroupApps(
+    groupId: string,
+    app: AppId,
+    enabled: boolean,
+  ): Promise<InstalledSkill[]> {
+    return await invoke("batch_toggle_group_apps", { groupId, app, enabled });
   },
 };
