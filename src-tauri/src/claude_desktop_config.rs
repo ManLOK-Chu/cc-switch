@@ -21,7 +21,6 @@ const CONFIG_LIBRARY_DIR: &str = "configLibrary";
 const GATEWAY_TOKEN_SETTING_KEY: &str = "claude_desktop_gateway_token";
 const CLAUDE_DESKTOP_PROXY_PREFIX: &str = "/claude-desktop";
 const DEFAULT_CREATED_AT: &str = "2024-01-01T00:00:00Z";
-const ONE_M_CONTEXT_SUFFIX: &str = " [1M]";
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +92,12 @@ pub struct ResolvedModelRoute {
     pub route_id: String,
     pub upstream_model: String,
     pub supports_1m: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InferenceModelSpec {
+    name: String,
+    supports_1m: bool,
 }
 
 pub fn apply_provider(db: &Database, provider: &Provider) -> Result<(), AppError> {
@@ -204,44 +209,19 @@ pub fn provider_mode(provider: &Provider) -> ClaudeDesktopMode {
 }
 
 pub fn is_claude_safe_model_id(model: &str) -> bool {
-    let normalized = strip_one_m_context_suffix(model).to_ascii_lowercase();
-    normalized.starts_with("claude-") || normalized.starts_with("anthropic/claude-")
+    let normalized = model.trim().to_ascii_lowercase();
+    (normalized.starts_with("claude-") || normalized.starts_with("anthropic/claude-"))
+        && !normalized.contains("[1m]")
 }
 
-fn strip_one_m_context_suffix(model: &str) -> String {
-    let trimmed = model.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.ends_with("[1m]") {
-        trimmed[..trimmed.len().saturating_sub("[1M]".len())]
-            .trim_end()
-            .to_string()
+fn inference_model_json(spec: &InferenceModelSpec) -> Value {
+    if spec.supports_1m {
+        json!({
+            "name": spec.name,
+            "supports1m": true,
+        })
     } else {
-        trimmed.to_string()
-    }
-}
-
-fn has_one_m_context_suffix(model: &str) -> bool {
-    model.trim().to_ascii_lowercase().ends_with("[1m]")
-}
-
-fn desktop_model_id(model_id: &str, supports_1m: bool) -> String {
-    let normalized = strip_one_m_context_suffix(model_id);
-    if supports_1m {
-        format!("{normalized}{ONE_M_CONTEXT_SUFFIX}")
-    } else {
-        normalized
-    }
-}
-
-fn upstream_model_id(model_id: &str, supports_1m: bool) -> String {
-    let normalized = strip_one_m_context_suffix(model_id);
-    // Only append [1M] for Claude-series upstream models
-    let is_claude_upstream =
-        normalized.starts_with("claude-") || normalized.starts_with("anthropic/");
-    if supports_1m && is_claude_upstream {
-        format!("{normalized}{ONE_M_CONTEXT_SUFFIX}")
-    } else {
-        normalized
+        Value::String(spec.name.clone())
     }
 }
 
@@ -359,7 +339,7 @@ pub fn validate_direct_provider(provider: &Provider) -> Result<(), AppError> {
         }
     }
 
-    direct_inference_model_ids(provider)?;
+    direct_inference_model_specs(provider)?;
     direct_gateway_credentials(provider)?;
     Ok(())
 }
@@ -460,7 +440,7 @@ pub fn validate_provider(provider: &Provider) -> Result<(), AppError> {
     }
 }
 
-pub fn direct_inference_model_ids(provider: &Provider) -> Result<Vec<String>, AppError> {
+fn direct_inference_model_specs(provider: &Provider) -> Result<Vec<InferenceModelSpec>, AppError> {
     let Some(routes) = provider
         .meta
         .as_ref()
@@ -471,23 +451,32 @@ pub fn direct_inference_model_ids(provider: &Provider) -> Result<Vec<String>, Ap
 
     let mut result = Vec::new();
     for (route_id, route) in routes {
-        let supports_1m = route.supports_1m.unwrap_or(false) || has_one_m_context_suffix(route_id);
-        let route_id = strip_one_m_context_suffix(route_id);
+        let supports_1m = route.supports_1m.unwrap_or(false);
+        let route_id = route_id.trim();
         if route_id.is_empty() {
             continue;
         }
-        if !is_claude_safe_model_id(&route_id) {
+        if !is_claude_safe_model_id(route_id) {
             return Err(AppError::localized(
                 "claude_desktop.provider.route_invalid",
                 format!("Claude Desktop 直连模型必须使用 claude-* 或 anthropic/claude-* 名称: {route_id}"),
                 format!("Claude Desktop direct model must use a claude-* or anthropic/claude-* name: {route_id}"),
             ));
         }
-        result.push(desktop_model_id(&route_id, supports_1m));
+        result.push(InferenceModelSpec {
+            name: route_id.to_string(),
+            supports_1m,
+        });
     }
 
-    result.sort();
-    result.dedup();
+    // Sort supports_1m=true first within each name so the subsequent dedup_by
+    // (which keeps the first occurrence) preserves the 1M-capable variant.
+    result.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| b.supports_1m.cmp(&a.supports_1m))
+    });
+    result.dedup_by(|a, b| a.name == b.name);
     Ok(result)
 }
 
@@ -506,13 +495,13 @@ pub fn proxy_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>
 
     let mut result = Vec::new();
     for (route_id, route) in routes {
-        let supports_1m = route.supports_1m.unwrap_or(false) || has_one_m_context_suffix(route_id);
-        let route_id = strip_one_m_context_suffix(route_id);
+        let supports_1m = route.supports_1m.unwrap_or(false);
+        let route_id = route_id.trim();
         let upstream_model = route.model.trim();
         if route_id.is_empty() || upstream_model.is_empty() {
             continue;
         }
-        if !is_claude_safe_model_id(&route_id) {
+        if !is_claude_safe_model_id(route_id) {
             return Err(AppError::localized(
                 "claude_desktop.provider.route_invalid",
                 format!("Claude Desktop 模型路由必须使用 claude-* 或 anthropic/claude-* 名称: {route_id}"),
@@ -520,8 +509,8 @@ pub fn proxy_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>
             ));
         }
         result.push(ResolvedModelRoute {
-            route_id: desktop_model_id(&route_id, supports_1m),
-            upstream_model: upstream_model_id(upstream_model, supports_1m),
+            route_id: route_id.to_string(),
+            upstream_model: upstream_model.to_string(),
             supports_1m,
         });
     }
@@ -545,7 +534,7 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
     let data: Vec<Value> = routes
         .iter()
         .map(|route| {
-            let model_id = desktop_model_id(&route.route_id, route.supports_1m);
+            let model_id = route.route_id.clone();
             let mut item = json!({
                 "type": "model",
                 "id": model_id,
@@ -592,12 +581,7 @@ pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<V
         })?;
 
     let routes = proxy_model_routes(provider)?;
-    let route = routes.iter().find(|r| r.route_id == requested).or_else(|| {
-        let base = strip_one_m_context_suffix(&requested);
-        routes
-            .iter()
-            .find(|r| strip_one_m_context_suffix(&r.route_id) == base)
-    });
+    let route = routes.iter().find(|r| r.route_id == requested);
     let Some(route) = route else {
         return Err(AppError::localized(
             "claude_desktop.provider.route_unknown",
@@ -667,22 +651,25 @@ fn apply_provider_to_paths_inner(
     let profile = match provider_mode(provider) {
         ClaudeDesktopMode::Direct => {
             let credentials = direct_gateway_credentials(provider)?;
-            let model_ids = direct_inference_model_ids(provider)?;
+            let model_specs = direct_inference_model_specs(provider)?;
             build_gateway_profile(
                 &credentials.base_url,
                 &credentials.api_key,
-                (!model_ids.is_empty()).then_some(model_ids.as_slice()),
+                (!model_specs.is_empty()).then_some(model_specs.as_slice()),
             )
         }
         ClaudeDesktopMode::Proxy => {
             let base_url = proxy_gateway_base_url_from_db(db)?;
             let api_key = get_or_create_gateway_token(db)?;
             let routes = proxy_model_routes(provider)?;
-            let model_ids = routes
+            let model_specs = routes
                 .iter()
-                .map(|route| desktop_model_id(&route.route_id, route.supports_1m))
+                .map(|route| InferenceModelSpec {
+                    name: route.route_id.clone(),
+                    supports_1m: route.supports_1m,
+                })
                 .collect::<Vec<_>>();
-            build_gateway_profile(&base_url, &api_key, Some(model_ids.as_slice()))
+            build_gateway_profile(&base_url, &api_key, Some(model_specs.as_slice()))
         }
     };
 
@@ -707,7 +694,11 @@ fn restore_official_at_paths_inner(paths: &ClaudeDesktopPaths) -> Result<(), App
     Ok(())
 }
 
-fn build_gateway_profile(base_url: &str, api_key: &str, model_ids: Option<&[String]>) -> Value {
+fn build_gateway_profile(
+    base_url: &str,
+    api_key: &str,
+    model_specs: Option<&[InferenceModelSpec]>,
+) -> Value {
     let mut profile = json!({
         "disableDeploymentModeChooser": true,
         "inferenceGatewayApiKey": api_key,
@@ -716,13 +707,9 @@ fn build_gateway_profile(base_url: &str, api_key: &str, model_ids: Option<&[Stri
         "inferenceProvider": "gateway"
     });
 
-    if let Some(model_ids) = model_ids {
-        profile["inferenceModels"] = Value::Array(
-            model_ids
-                .iter()
-                .map(|model_id| Value::String(model_id.clone()))
-                .collect(),
-        );
+    if let Some(model_specs) = model_specs {
+        profile["inferenceModels"] =
+            Value::Array(model_specs.iter().map(inference_model_json).collect());
     }
 
     profile
@@ -1168,7 +1155,7 @@ mod tests {
         );
         assert_eq!(
             profile["inferenceModels"],
-            json!(["claude-deepseek-chat [1M]"])
+            json!([{ "name": "claude-deepseek-chat", "supports1m": true }])
         );
     }
 
@@ -1194,7 +1181,7 @@ mod tests {
             .starts_with("ccs-"));
         assert_eq!(
             profile["inferenceModels"],
-            json!(["claude-sonnet-4-6 [1M]"])
+            json!([{ "name": "claude-sonnet-4-6", "supports1m": true }])
         );
         assert!(!profile.to_string().contains("kimi-k2"));
     }
@@ -1227,14 +1214,15 @@ mod tests {
         let provider = proxy_provider("proxy");
 
         let mapped = map_proxy_request_model(
-            json!({"model": "claude-sonnet-4-6 [1M]", "messages": []}),
+            json!({"model": "claude-sonnet-4-6", "messages": []}),
             &provider,
         )
         .expect("map route");
         assert_eq!(mapped["model"], json!("kimi-k2"));
 
         let models = model_list_response(&provider).expect("model list");
-        assert_eq!(models["data"][0]["id"], json!("claude-sonnet-4-6 [1M]"));
+        assert_eq!(models["data"][0]["id"], json!("claude-sonnet-4-6"));
+        assert_eq!(models["data"][0]["supports1m"], json!(true));
 
         let err = map_proxy_request_model(json!({"model": "claude-opus-4-7"}), &provider)
             .expect_err("unknown route should fail");
@@ -1242,29 +1230,22 @@ mod tests {
     }
 
     #[test]
-    fn claude_desktop_proxy_maps_route_without_1m_suffix() {
+    fn claude_desktop_proxy_rejects_1m_suffix_route() {
         let provider = proxy_provider("proxy");
 
-        let mapped = map_proxy_request_model(
-            json!({"model": "claude-sonnet-4-6", "messages": []}),
+        let err = map_proxy_request_model(
+            json!({"model": "claude-sonnet-4-6 [1M]", "messages": []}),
             &provider,
         )
-        .expect("base name should fallback-match the [1M] route");
-        assert_eq!(mapped["model"], json!("kimi-k2"));
+        .expect_err("1M suffix route should not be accepted");
+        assert!(err.to_string().contains("claude-sonnet-4-6 [1M]"));
     }
 
     #[test]
-    fn claude_desktop_one_m_suffix_normalization_is_case_and_space_tolerant() {
-        assert!(is_claude_safe_model_id("claude-sonnet-4-6 [1m]"));
-        assert!(is_claude_safe_model_id("  claude-sonnet-4-6  [1M]  "));
-        assert_eq!(
-            strip_one_m_context_suffix("  claude-sonnet-4-6  [1m]  "),
-            "claude-sonnet-4-6"
-        );
-        assert_eq!(
-            desktop_model_id("  claude-sonnet-4-6  [1m]  ", true),
-            "claude-sonnet-4-6 [1M]"
-        );
+    fn claude_desktop_rejects_1m_suffix_as_model_id() {
+        assert!(!is_claude_safe_model_id("claude-sonnet-4-6 [1m]"));
+        assert!(!is_claude_safe_model_id("  claude-sonnet-4-6  [1M]  "));
+        assert!(is_claude_safe_model_id("  claude-sonnet-4-6  "));
     }
 
     #[test]
@@ -1404,44 +1385,5 @@ mod tests {
             None,
         );
         assert!(!is_compatible_direct_provider(&missing_bearer));
-    }
-
-    #[test]
-    fn claude_desktop_upstream_model_id_skips_one_m_for_non_claude() {
-        // Non-Claude upstream + supports_1m=true → no [1M] suffix
-        assert_eq!(
-            upstream_model_id("deepseek-v4-pro", true),
-            "deepseek-v4-pro"
-        );
-
-        // Claude upstream + supports_1m=true → append [1M]
-        assert_eq!(
-            upstream_model_id("claude-sonnet-4-6", true),
-            "claude-sonnet-4-6 [1M]"
-        );
-
-        // Claude upstream + supports_1m=false → no suffix
-        assert_eq!(
-            upstream_model_id("claude-sonnet-4-6", false),
-            "claude-sonnet-4-6"
-        );
-
-        // Non-Claude upstream + supports_1m=false → no suffix
-        assert_eq!(
-            upstream_model_id("deepseek-v4-pro", false),
-            "deepseek-v4-pro"
-        );
-
-        // anthropic/ prefix + supports_1m=true → append [1M]
-        assert_eq!(
-            upstream_model_id("anthropic/claude-sonnet-4.6", true),
-            "anthropic/claude-sonnet-4.6 [1M]"
-        );
-
-        // [1m]-suffixed non-Claude upstream → strip suffix, no re-append
-        assert_eq!(
-            upstream_model_id("deepseek-v4-pro [1m]", true),
-            "deepseek-v4-pro"
-        );
     }
 }
