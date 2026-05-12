@@ -334,3 +334,106 @@ pub fn install_skills_from_zip(
 
     SkillService::install_from_zip(&app_state.db, path, &app_type).map_err(|e| e.to_string())
 }
+
+// ========== Skill 分组管理命令 ==========
+
+use crate::services::skill::{SkillGroup, SkillGroupMember};
+
+/// 获取所有 Skill 分组
+#[tauri::command]
+pub fn get_skill_groups(app_state: State<'_, AppState>) -> Result<Vec<SkillGroup>, String> {
+    SkillService::get_skill_groups(&app_state.db).map_err(|e| e.to_string())
+}
+
+/// 创建 Skill 分组
+#[tauri::command]
+pub fn create_skill_group(
+    name: String,
+    app_state: State<'_, AppState>,
+) -> Result<SkillGroup, String> {
+    SkillService::create_skill_group(&app_state.db, &name).map_err(|e| e.to_string())
+}
+
+/// 更新 Skill 分组名称
+#[tauri::command]
+pub fn update_skill_group(
+    id: String,
+    name: String,
+    app_state: State<'_, AppState>,
+) -> Result<SkillGroup, String> {
+    SkillService::update_skill_group(&app_state.db, &id, &name).map_err(|e| e.to_string())
+}
+
+/// 删除 Skill 分组（仅限空分组）
+#[tauri::command]
+pub fn delete_skill_group(
+    id: String,
+    app_state: State<'_, AppState>,
+) -> Result<bool, String> {
+    SkillService::delete_skill_group(&app_state.db, &id).map_err(|e| e.to_string())
+}
+
+/// 重新排序 Skill 分组
+#[tauri::command]
+pub fn reorder_skill_groups(
+    ids: Vec<String>,
+    app_state: State<'_, AppState>,
+) -> Result<bool, String> {
+    SkillService::reorder_skill_groups(&app_state.db, &ids).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 获取所有 Skill 分组关联关系
+#[tauri::command]
+pub fn get_skill_group_members(
+    app_state: State<'_, AppState>,
+) -> Result<Vec<SkillGroupMember>, String> {
+    SkillService::get_skill_group_members(&app_state.db).map_err(|e| e.to_string())
+}
+
+/// 将 Skill 添加到分组
+#[tauri::command]
+pub fn add_skill_to_group(
+    skill_id: String,
+    group_id: String,
+    app_state: State<'_, AppState>,
+) -> Result<bool, String> {
+    SkillService::add_skill_to_group(&app_state.db, &skill_id, &group_id)
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 将 Skill 从分组中移除
+#[tauri::command]
+pub fn remove_skill_from_group(
+    skill_id: String,
+    app_state: State<'_, AppState>,
+) -> Result<bool, String> {
+    SkillService::remove_skill_from_group(&app_state.db, &skill_id)
+        .map_err(|e| e.to_string())
+}
+
+/// 移动 Skill 到指定分组（None 表示移除分组）
+#[tauri::command]
+pub fn move_skill_to_group(
+    skill_id: String,
+    group_id: Option<String>,
+    app_state: State<'_, AppState>,
+) -> Result<bool, String> {
+    SkillService::move_skill_to_group(&app_state.db, &skill_id, group_id.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 按分组批量启用/停用 Skills
+#[tauri::command]
+pub fn batch_toggle_group_apps(
+    group_id: String,
+    app: String,
+    enabled: bool,
+    app_state: State<'_, AppState>,
+) -> Result<Vec<InstalledSkill>, String> {
+    let app_type = parse_app_type(&app)?;
+    SkillService::batch_toggle_group_apps(&app_state.db, &group_id, &app_type, enabled)
+        .map_err(|e| e.to_string())
+}

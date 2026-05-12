@@ -1191,6 +1191,17 @@ pub fn run() {
             commands::add_skill_repo,
             commands::remove_skill_repo,
             commands::install_skills_from_zip,
+            // Skill group management
+            commands::get_skill_groups,
+            commands::create_skill_group,
+            commands::update_skill_group,
+            commands::delete_skill_group,
+            commands::reorder_skill_groups,
+            commands::get_skill_group_members,
+            commands::add_skill_to_group,
+            commands::remove_skill_from_group,
+            commands::move_skill_to_group,
+            commands::batch_toggle_group_apps,
             // Auto launch
             commands::set_auto_launch,
             commands::get_auto_launch_status,
