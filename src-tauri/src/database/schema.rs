@@ -431,6 +431,11 @@ impl Database {
                         Self::migrate_v9_to_v10(conn)?;
                         Self::set_user_version(conn, 10)?;
                     }
+                    10 => {
+                        log::info!("迁移数据库从 v10 到 v11（添加 Skill Group 支持）");
+                        Self::migrate_v10_to_v11(conn)?;
+                        Self::set_user_version(conn, 11)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -1197,6 +1202,36 @@ impl Database {
         }
 
         log::info!("v9 -> v10 迁移完成：已添加 Hermes Agent 支持");
+        Ok(())
+    }
+
+    /// v10 -> v11 迁移：添加 Skill Group 支持
+    fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        // 1. 创建 skill_groups 表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                sort_index INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 skill_groups 表失败: {e}")))?;
+
+        // 2. 创建 skill_group_members 关联表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_group_members (
+                skill_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                PRIMARY KEY (skill_id, group_id),
+                FOREIGN KEY (group_id) REFERENCES skill_groups(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 skill_group_members 表失败: {e}")))?;
+
+        log::info!("v10 -> v11 迁移完成：已添加 Skill Group 支持");
         Ok(())
     }
 
