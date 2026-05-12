@@ -240,7 +240,8 @@ export function CodexFormFields({
           </Select>
           <p className="text-xs text-muted-foreground">
             {t("providerForm.apiFormatHint", {
-              defaultValue: "选择供应商 API 的输入格式，默认 OpenAI Chat Completions",
+              defaultValue:
+                "选择供应商 API 的输入格式，默认 OpenAI Chat Completions",
             })}
           </p>
         </div>
