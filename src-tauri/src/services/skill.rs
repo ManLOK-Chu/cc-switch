@@ -2813,6 +2813,109 @@ impl SkillService {
             query: resp.query,
         })
     }
+
+    // ========== 分组管理 ==========
+
+    pub fn get_skill_groups(db: &Arc<Database>) -> Result<Vec<SkillGroup>> {
+        db.get_skill_groups().map_err(|e| e.into())
+    }
+
+    pub fn create_skill_group(db: &Arc<Database>, name: &str) -> Result<SkillGroup> {
+        let group = SkillGroup {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            sort_index: 0,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        db.save_skill_group(&group)?;
+        Ok(group)
+    }
+
+    pub fn update_skill_group(
+        db: &Arc<Database>,
+        id: &str,
+        name: &str,
+    ) -> Result<SkillGroup> {
+        let mut group = db
+            .get_skill_group(id)?
+            .ok_or_else(|| anyhow!("Skill group not found: {id}"))?;
+        group.name = name.to_string();
+        db.save_skill_group(&group)?;
+        Ok(group)
+    }
+
+    pub fn delete_skill_group(db: &Arc<Database>, id: &str) -> Result<bool> {
+        let members = db.get_group_members_by_group(id)?;
+        if !members.is_empty() {
+            return Err(anyhow!("Cannot delete non-empty group"));
+        }
+        db.delete_skill_group(id).map_err(|e| e.into())
+    }
+
+    pub fn reorder_skill_groups(
+        db: &Arc<Database>,
+        ids: &[String],
+    ) -> Result<()> {
+        for (index, id) in ids.iter().enumerate() {
+            if let Some(mut group) = db.get_skill_group(id)? {
+                group.sort_index = index as i32;
+                db.save_skill_group(&group)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_skill_group_members(db: &Arc<Database>) -> Result<Vec<SkillGroupMember>> {
+        db.get_skill_group_members().map_err(|e| e.into())
+    }
+
+    pub fn add_skill_to_group(
+        db: &Arc<Database>,
+        skill_id: &str,
+        group_id: &str,
+    ) -> Result<()> {
+        db.add_skill_to_group(skill_id, group_id)
+            .map_err(|e| e.into())
+    }
+
+    pub fn remove_skill_from_group(db: &Arc<Database>, skill_id: &str) -> Result<bool> {
+        db.remove_skill_from_group(skill_id)
+            .map_err(|e| e.into())
+    }
+
+    pub fn move_skill_to_group(
+        db: &Arc<Database>,
+        skill_id: &str,
+        group_id: Option<&str>,
+    ) -> Result<()> {
+        db.move_skill_to_group(skill_id, group_id)
+            .map_err(|e| e.into())
+    }
+
+    pub fn batch_toggle_group_apps(
+        db: &Arc<Database>,
+        group_id: &str,
+        app: &AppType,
+        enabled: bool,
+    ) -> Result<Vec<InstalledSkill>> {
+        let skill_ids = db.get_group_members_by_group(group_id)?;
+        let mut updated = Vec::new();
+
+        for skill_id in skill_ids {
+            if let Some(mut skill) = db.get_installed_skill(&skill_id)? {
+                skill.apps.set_enabled_for(app, enabled);
+                db.update_skill_apps(&skill_id, &skill.apps)?;
+                if enabled {
+                    Self::sync_to_app_dir(&skill.directory, app)?;
+                } else {
+                    Self::remove_from_app(&skill.directory, app)?;
+                }
+                updated.push(skill);
+            }
+        }
+
+        Ok(updated)
+    }
 }
 
 // ========== 迁移支持 ==========
