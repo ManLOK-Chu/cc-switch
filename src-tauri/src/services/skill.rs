@@ -110,6 +110,28 @@ pub struct SkillRepo {
     pub enabled: bool,
 }
 
+/// Skill 分组
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillGroup {
+    /// 分组 ID
+    pub id: String,
+    /// 分组名称
+    pub name: String,
+    /// 排序索引
+    pub sort_index: i32,
+    /// 创建时间
+    pub created_at: i64,
+}
+
+/// Skill 分组成员关系
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillGroupMember {
+    /// Skill ID
+    pub skill_id: String,
+    /// 分组 ID
+    pub group_id: String,
+}
+
 /// 技能安装状态（旧版兼容）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillState {
