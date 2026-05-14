@@ -2,13 +2,10 @@ import React, { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Sparkles,
-  Trash2,
-  ExternalLink,
   RefreshCw,
   Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   type ImportSkillSelection,
@@ -24,17 +21,25 @@ import {
   useInstallSkillsFromZip,
   useCheckSkillUpdates,
   useUpdateSkill,
+  useSkillGroups,
+  useSkillGroupMembers,
+  useCreateSkillGroup,
+  useUpdateSkillGroup,
+  useDeleteSkillGroup,
+  useBatchToggleGroupApps,
+  useMoveSkillToGroup,
   type InstalledSkill,
   type SkillUpdateInfo,
 } from "@/hooks/useSkills";
+import { SkillGroupList } from "./SkillGroupList";
+import { DraggableSkillRow } from "./DraggableSkillRow";
 import type { AppId } from "@/lib/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { settingsApi, skillsApi } from "@/lib/api";
+import { skillsApi } from "@/lib/api";
 import { toast } from "sonner";
 import { SKILLS_APP_IDS } from "@/config/appConfig";
 import { AppCountBar } from "@/components/common/AppCountBar";
 import { AppToggleGroup } from "@/components/common/AppToggleGroup";
-import { ListItemRow } from "@/components/common/ListItemRow";
 import {
   Dialog,
   DialogContent,
@@ -81,6 +86,13 @@ const UnifiedSkillsPanel = React.forwardRef<
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 
   const { data: skills, isLoading } = useInstalledSkills();
+  const { data: groups } = useSkillGroups();
+  const { data: members } = useSkillGroupMembers();
+  const createGroupMutation = useCreateSkillGroup();
+  const updateGroupMutation = useUpdateSkillGroup();
+  const deleteGroupMutation = useDeleteSkillGroup();
+  const batchToggleGroupMutation = useBatchToggleGroupApps();
+  const moveSkillToGroupMutation = useMoveSkillToGroup();
   const {
     data: skillBackups = [],
     refetch: refetchSkillBackups,
@@ -134,6 +146,17 @@ const UnifiedSkillsPanel = React.forwardRef<
   const handleToggleApp = async (id: string, app: AppId, enabled: boolean) => {
     try {
       await toggleAppMutation.mutateAsync({ id, app, enabled });
+    } catch (error) {
+      toast.error(t("common.error"), { description: String(error) });
+    }
+  };
+
+  const handleMoveSkillToGroup = async (
+    skillId: string,
+    groupId: string | null,
+  ) => {
+    try {
+      await moveSkillToGroupMutation.mutateAsync({ skillId, groupId });
     } catch (error) {
       toast.error(t("common.error"), { description: String(error) });
     }
@@ -418,9 +441,13 @@ const UnifiedSkillsPanel = React.forwardRef<
           </div>
         ) : (
           <TooltipProvider delayDuration={300}>
-            <div className="rounded-xl border border-border-default overflow-hidden">
-              {skills.map((skill, index) => (
-                <InstalledSkillListItem
+            <SkillGroupList
+              skills={skills}
+              groups={groups || []}
+              members={members || []}
+              currentApp={currentApp}
+              renderSkillItem={(skill, isLast) => (
+                <DraggableSkillRow
                   key={skill.id}
                   skill={skill}
                   hasUpdate={!!updatesMap[skill.id]}
@@ -431,10 +458,25 @@ const UnifiedSkillsPanel = React.forwardRef<
                   onToggleApp={handleToggleApp}
                   onUninstall={() => handleUninstall(skill)}
                   onUpdate={() => handleUpdateSkill(skill)}
-                  isLast={index === skills.length - 1}
+                  isLast={isLast}
+                  groups={groups || []}
+                  members={members || []}
                 />
-              ))}
-            </div>
+              )}
+              onBatchToggleGroup={(groupId, enabled) =>
+                batchToggleGroupMutation.mutate({
+                  groupId,
+                  app: currentApp,
+                  enabled,
+                })
+              }
+              onCreateGroup={(name) => createGroupMutation.mutate(name)}
+              onUpdateGroup={(id, name) =>
+                updateGroupMutation.mutate({ id, name })
+              }
+              onDeleteGroup={(id) => deleteGroupMutation.mutate(id)}
+              onMoveSkill={handleMoveSkillToGroup}
+            />
           </TooltipProvider>
         )}
       </div>
@@ -476,123 +518,6 @@ const UnifiedSkillsPanel = React.forwardRef<
 });
 
 UnifiedSkillsPanel.displayName = "UnifiedSkillsPanel";
-
-interface InstalledSkillListItemProps {
-  skill: InstalledSkill;
-  hasUpdate?: boolean;
-  isUpdating?: boolean;
-  onToggleApp: (id: string, app: AppId, enabled: boolean) => void;
-  onUninstall: () => void;
-  onUpdate?: () => void;
-  isLast?: boolean;
-}
-
-const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
-  skill,
-  hasUpdate,
-  isUpdating,
-  onToggleApp,
-  onUninstall,
-  onUpdate,
-  isLast,
-}) => {
-  const { t } = useTranslation();
-
-  const openDocs = async () => {
-    if (!skill.readmeUrl) return;
-    try {
-      await settingsApi.openExternal(skill.readmeUrl);
-    } catch {
-      // ignore
-    }
-  };
-
-  const sourceLabel = useMemo(() => {
-    if (skill.repoOwner && skill.repoName) {
-      return `${skill.repoOwner}/${skill.repoName}`;
-    }
-    return t("skills.local");
-  }, [skill.repoOwner, skill.repoName, t]);
-
-  return (
-    <ListItemRow isLast={isLast}>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-sm text-foreground truncate">
-            {skill.name}
-          </span>
-          {skill.readmeUrl && (
-            <button
-              type="button"
-              onClick={openDocs}
-              className="text-muted-foreground/60 hover:text-foreground flex-shrink-0"
-            >
-              <ExternalLink size={12} />
-            </button>
-          )}
-          <span className="text-xs text-muted-foreground/50 flex-shrink-0">
-            {sourceLabel}
-          </span>
-          {hasUpdate && (
-            <Badge
-              variant="outline"
-              className="shrink-0 text-[10px] px-1.5 py-0 h-4 border-amber-500 text-amber-600 dark:text-amber-400"
-            >
-              {t("skills.updateAvailable")}
-            </Badge>
-          )}
-        </div>
-        {skill.description && (
-          <p
-            className="text-xs text-muted-foreground truncate"
-            title={skill.description}
-          >
-            {skill.description}
-          </p>
-        )}
-      </div>
-
-      <AppToggleGroup
-        apps={skill.apps}
-        onToggle={(app, enabled) => onToggleApp(skill.id, app, enabled)}
-        appIds={SKILLS_APP_IDS}
-      />
-
-      <div
-        className="flex-shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-        style={hasUpdate ? { opacity: 1 } : undefined}
-      >
-        {hasUpdate && onUpdate && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 hover:text-blue-500 hover:bg-blue-100 dark:hover:text-blue-400 dark:hover:bg-blue-500/10"
-            onClick={onUpdate}
-            disabled={isUpdating}
-            title={t("skills.update")}
-          >
-            {isUpdating ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <RefreshCw size={14} />
-            )}
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 hover:text-red-500 hover:bg-red-100 dark:hover:text-red-400 dark:hover:bg-red-500/10"
-          onClick={onUninstall}
-          title={t("skills.uninstall")}
-        >
-          <Trash2 size={14} />
-        </Button>
-      </div>
-    </ListItemRow>
-  );
-};
 
 interface ImportSkillsDialogProps {
   skills: Array<{
