@@ -14,6 +14,24 @@ const installFromZipMock = vi.fn();
 const deleteSkillBackupMock = vi.fn();
 const restoreSkillBackupMock = vi.fn();
 
+let mockGroupsData: Array<{
+  id: string;
+  name: string;
+  sortIndex: number;
+  createdAt: number;
+}> = [];
+
+let mockInstalledSkills: Array<{
+  id: string;
+  name: string;
+  description?: string;
+  directory: string;
+  repoOwner?: string;
+  repoName?: string;
+  readmeUrl?: string;
+  apps: Record<string, boolean>;
+}> = [];
+
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
@@ -24,7 +42,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/hooks/useSkills", () => ({
   useInstalledSkills: () => ({
-    data: [],
+    data: mockInstalledSkills,
     isLoading: false,
   }),
   useSkillBackups: () => ({
@@ -73,10 +91,47 @@ vi.mock("@/hooks/useSkills", () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),
+  useSkillGroups: () => ({ data: mockGroupsData }),
+  useSkillGroupMembers: () => ({ data: [] }),
+  useCreateSkillGroup: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  useUpdateSkillGroup: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  useDeleteSkillGroup: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  useBatchToggleGroupApps: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  useMoveSkillToGroup: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+}));
+
+vi.mock("@/components/skills/GroupSidebar", () => ({
+  GroupSidebar: vi.fn(() => <div data-testid="group-sidebar" />),
+}));
+
+vi.mock("@dnd-kit/core", () => ({
+  DndContext: vi.fn(({ children }: { children: React.ReactNode }) => (
+    <div data-testid="dnd-context">{children}</div>
+  )),
+  DragOverlay: vi.fn(() => null),
+  useDraggable: vi.fn(() => ({
+    attributes: {},
+    listeners: {},
+    setNodeRef: vi.fn(),
+    transform: null,
+    isDragging: false,
+  })),
+  useDroppable: vi.fn(() => ({ isOver: false, setNodeRef: vi.fn() })),
+  PointerSensor: vi.fn(),
+  KeyboardSensor: vi.fn(),
+  useSensor: vi.fn(() => ({})),
+  useSensors: vi.fn(() => []),
+  closestCenter: vi.fn(),
+}));
+
+vi.mock("@dnd-kit/utilities", () => ({
+  CSS: { Translate: { toString: vi.fn(() => "") } },
 }));
 
 describe("UnifiedSkillsPanel", () => {
   beforeEach(() => {
+    mockGroupsData = [];
+    mockInstalledSkills = [];
     scanUnmanagedMock.mockResolvedValue({
       data: [
         {
@@ -115,6 +170,41 @@ describe("UnifiedSkillsPanel", () => {
       expect(screen.getByText("skills.import")).toBeInTheDocument();
       expect(screen.getByText("Shared Skill")).toBeInTheDocument();
       expect(screen.getByText("/tmp/shared-skill")).toBeInTheDocument();
+    });
+  });
+
+  it("shows sidebar when groups exist", async () => {
+    mockInstalledSkills = [
+      {
+        id: "skill-1",
+        name: "Test Skill",
+        directory: "test-skill",
+        apps: { claude: true, codex: false, gemini: false, opencode: false, openclaw: false, hermes: false },
+      },
+    ];
+    mockGroupsData = [
+      { id: "g1", name: "Test Group", sortIndex: 0, createdAt: 1 },
+    ];
+
+    render(
+      <UnifiedSkillsPanel onOpenDiscovery={vi.fn()} currentApp="claude" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("dnd-context")).toBeInTheDocument();
+      expect(screen.getByTestId("group-sidebar")).toBeInTheDocument();
+    });
+  });
+
+  it("hides sidebar when no groups exist", async () => {
+    mockGroupsData = [];
+
+    render(
+      <UnifiedSkillsPanel onOpenDiscovery={vi.fn()} currentApp="claude" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("dnd-context")).not.toBeInTheDocument();
     });
   });
 });
