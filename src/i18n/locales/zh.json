@@ -5,6 +5,7 @@
   },
   "common": {
     "add": "添加",
+    "create": "创建",
     "edit": "编辑",
     "delete": "删除",
     "save": "保存",
@@ -1949,6 +1950,17 @@
       "successSingle": "技能 {{name}} 已安装",
       "successMultiple": "成功安装 {{count}} 个技能",
       "noSkillsFound": "ZIP 文件中未找到技能（需包含 SKILL.md 文件）"
+    },
+    "groups": {
+      "new": "新建分组",
+      "default": "默认分组",
+      "empty": "暂无技能",
+      "batchEnable": "批量启用",
+      "batchDisable": "批量停用",
+      "createTitle": "新建分组",
+      "editTitle": "编辑分组",
+      "namePlaceholder": "分组名称",
+      "moveTo": "移动到分组"
     }
   },
   "deeplink": {

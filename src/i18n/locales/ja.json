@@ -5,6 +5,7 @@
   },
   "common": {
     "add": "追加",
+    "create": "作成",
     "edit": "編集",
     "delete": "削除",
     "save": "保存",
@@ -1949,6 +1950,17 @@
       "successSingle": "スキル {{name}} をインストールしました",
       "successMultiple": "{{count}} 件のスキルをインストールしました",
       "noSkillsFound": "ZIP ファイルにスキルが見つかりません（SKILL.md が必要です）"
+    },
+    "groups": {
+      "new": "新規グループ",
+      "default": "デフォルトグループ",
+      "empty": "このグループにはスキルがありません",
+      "batchEnable": "一括有効化",
+      "batchDisable": "一括無効化",
+      "createTitle": "グループを作成",
+      "editTitle": "グループを編集",
+      "namePlaceholder": "グループ名",
+      "moveTo": "グループに移動"
     }
   },
   "deeplink": {

@@ -380,4 +380,26 @@ export const handlers = [
   ),
   http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, () => success(null)),
+
+  // Skill Groups APIs
+  http.post(`${TAURI_ENDPOINT}/get_skill_groups`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_skill_group_members`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/create_skill_group`, async ({ request }) => {
+    const { name } = await withJson<{ name: string }>(request);
+    return success({
+      id: `mock-group-${Date.now()}`,
+      name,
+      sortIndex: 0,
+      createdAt: Date.now(),
+    });
+  }),
+  http.post(`${TAURI_ENDPOINT}/update_skill_group`, async ({ request }) => {
+    const { id, name } = await withJson<{ id: string; name: string }>(request);
+    return success({ id, name, sortIndex: 0, createdAt: Date.now() });
+  }),
+  http.post(`${TAURI_ENDPOINT}/delete_skill_group`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/add_skill_to_group`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/remove_skill_from_group`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/move_skill_to_group`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/batch_toggle_group_apps`, () => success([])),
 ];

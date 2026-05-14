@@ -5,6 +5,7 @@
   },
   "common": {
     "add": "Add",
+    "create": "Create",
     "edit": "Edit",
     "delete": "Delete",
     "save": "Save",
@@ -1949,6 +1950,17 @@
       "successSingle": "Skill {{name}} installed",
       "successMultiple": "Successfully installed {{count}} skills",
       "noSkillsFound": "No skills found in ZIP file (requires SKILL.md file)"
+    },
+    "groups": {
+      "new": "New Group",
+      "default": "Default Group",
+      "empty": "No skills in this group",
+      "batchEnable": "Batch Enable",
+      "batchDisable": "Batch Disable",
+      "createTitle": "Create Group",
+      "editTitle": "Edit Group",
+      "namePlaceholder": "Group name",
+      "moveTo": "Move to group"
     }
   },
   "deeplink": {

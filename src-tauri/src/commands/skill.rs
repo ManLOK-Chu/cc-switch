@@ -366,10 +366,7 @@ pub fn update_skill_group(
 
 /// 删除 Skill 分组（仅限空分组）
 #[tauri::command]
-pub fn delete_skill_group(
-    id: String,
-    app_state: State<'_, AppState>,
-) -> Result<bool, String> {
+pub fn delete_skill_group(id: String, app_state: State<'_, AppState>) -> Result<bool, String> {
     SkillService::delete_skill_group(&app_state.db, &id).map_err(|e| e.to_string())
 }
 
@@ -409,8 +406,7 @@ pub fn remove_skill_from_group(
     skill_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    SkillService::remove_skill_from_group(&app_state.db, &skill_id)
-        .map_err(|e| e.to_string())
+    SkillService::remove_skill_from_group(&app_state.db, &skill_id).map_err(|e| e.to_string())
 }
 
 /// 移动 Skill 到指定分组（None 表示移除分组）

@@ -442,13 +442,8 @@ export function useSkillGroupMembers() {
 export function useAddSkillToGroup() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      skillId,
-      groupId,
-    }: {
-      skillId: string;
-      groupId: string;
-    }) => skillsApi.addSkillToGroup(skillId, groupId),
+    mutationFn: ({ skillId, groupId }: { skillId: string; groupId: string }) =>
+      skillsApi.addSkillToGroup(skillId, groupId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["skills", "groupMembers"] });
     },

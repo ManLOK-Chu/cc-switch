@@ -112,6 +112,7 @@ pub struct SkillRepo {
 
 /// Skill 分组
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillGroup {
     /// 分组 ID
     pub id: String,
@@ -125,6 +126,7 @@ pub struct SkillGroup {
 
 /// Skill 分组成员关系
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillGroupMember {
     /// Skill ID
     pub skill_id: String,
@@ -2831,11 +2833,7 @@ impl SkillService {
         Ok(group)
     }
 
-    pub fn update_skill_group(
-        db: &Arc<Database>,
-        id: &str,
-        name: &str,
-    ) -> Result<SkillGroup> {
+    pub fn update_skill_group(db: &Arc<Database>, id: &str, name: &str) -> Result<SkillGroup> {
         let mut group = db
             .get_skill_group(id)?
             .ok_or_else(|| anyhow!("Skill group not found: {id}"))?;
@@ -2852,10 +2850,7 @@ impl SkillService {
         db.delete_skill_group(id).map_err(|e| e.into())
     }
 
-    pub fn reorder_skill_groups(
-        db: &Arc<Database>,
-        ids: &[String],
-    ) -> Result<()> {
+    pub fn reorder_skill_groups(db: &Arc<Database>, ids: &[String]) -> Result<()> {
         for (index, id) in ids.iter().enumerate() {
             if let Some(mut group) = db.get_skill_group(id)? {
                 group.sort_index = index as i32;
@@ -2869,18 +2864,13 @@ impl SkillService {
         db.get_skill_group_members().map_err(|e| e.into())
     }
 
-    pub fn add_skill_to_group(
-        db: &Arc<Database>,
-        skill_id: &str,
-        group_id: &str,
-    ) -> Result<()> {
+    pub fn add_skill_to_group(db: &Arc<Database>, skill_id: &str, group_id: &str) -> Result<()> {
         db.add_skill_to_group(skill_id, group_id)
             .map_err(|e| e.into())
     }
 
     pub fn remove_skill_from_group(db: &Arc<Database>, skill_id: &str) -> Result<bool> {
-        db.remove_skill_from_group(skill_id)
-            .map_err(|e| e.into())
+        db.remove_skill_from_group(skill_id).map_err(|e| e.into())
     }
 
     pub fn move_skill_to_group(
