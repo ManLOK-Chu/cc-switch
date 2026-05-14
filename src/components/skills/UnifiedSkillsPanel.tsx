@@ -1,10 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Sparkles,
-  RefreshCw,
-  Loader2,
-} from "lucide-react";
+import { Sparkles, RefreshCw, Loader2 } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -195,9 +191,7 @@ const UnifiedSkillsPanel = React.forwardRef<
     return skills.filter((s) => memberSkillIds.has(s.id));
   }, [skills, members, selectedGroupId]);
 
-  const handleDragEnd = (
-    event: import("@dnd-kit/core").DragEndEvent,
-  ) => {
+  const handleDragEnd = (event: import("@dnd-kit/core").DragEndEvent) => {
     const { active, over } = event;
     setActiveDragSkillId(null);
     if (!over) return;
@@ -205,12 +199,9 @@ const UnifiedSkillsPanel = React.forwardRef<
     const skillId = active.id as string;
     const targetGroupId = over.id as string;
 
-    const groupId =
-      targetGroupId === DEFAULT_GROUP_ID ? null : targetGroupId;
+    const groupId = targetGroupId === DEFAULT_GROUP_ID ? null : targetGroupId;
 
-    const currentMember = (members || []).find(
-      (m) => m.skillId === skillId,
-    );
+    const currentMember = (members || []).find((m) => m.skillId === skillId);
     if (
       currentMember?.groupId === groupId ||
       (!currentMember && groupId === null)

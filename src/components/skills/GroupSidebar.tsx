@@ -278,10 +278,7 @@ export function GroupSidebar({
             onChange={(e) => setEditName(e.target.value)}
           />
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setEditingGroup(null)}
-            >
+            <Button variant="outline" onClick={() => setEditingGroup(null)}>
               {t("common.cancel")}
             </Button>
             <Button
