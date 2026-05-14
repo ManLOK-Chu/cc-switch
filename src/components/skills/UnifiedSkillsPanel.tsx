@@ -1,10 +1,19 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Sparkles,
   RefreshCw,
   Loader2,
 } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -33,6 +42,7 @@ import {
 } from "@/hooks/useSkills";
 import { SkillGroupList } from "./SkillGroupList";
 import { DraggableSkillRow } from "./DraggableSkillRow";
+import { GroupSidebar } from "./GroupSidebar";
 import type { AppId } from "@/lib/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { skillsApi } from "@/lib/api";
@@ -161,6 +171,61 @@ const UnifiedSkillsPanel = React.forwardRef<
       toast.error(t("common.error"), { description: String(error) });
     }
   };
+
+  const DEFAULT_GROUP_ID = "default";
+
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [activeDragSkillId, setActiveDragSkillId] = useState<string | null>(
+    null,
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
+
+  const filteredSkills = useMemo(() => {
+    if (!skills) return [];
+    if (selectedGroupId === null) return skills;
+    const memberSkillIds = new Set(
+      (members || [])
+        .filter((m) => m.groupId === selectedGroupId)
+        .map((m) => m.skillId),
+    );
+    return skills.filter((s) => memberSkillIds.has(s.id));
+  }, [skills, members, selectedGroupId]);
+
+  const handleDragEnd = (
+    event: import("@dnd-kit/core").DragEndEvent,
+  ) => {
+    const { active, over } = event;
+    setActiveDragSkillId(null);
+    if (!over) return;
+
+    const skillId = active.id as string;
+    const targetGroupId = over.id as string;
+
+    const groupId =
+      targetGroupId === DEFAULT_GROUP_ID ? null : targetGroupId;
+
+    const currentMember = (members || []).find(
+      (m) => m.skillId === skillId,
+    );
+    if (
+      currentMember?.groupId === groupId ||
+      (!currentMember && groupId === null)
+    ) {
+      return;
+    }
+
+    handleMoveSkillToGroup(skillId, groupId);
+  };
+
+  useEffect(() => {
+    if ((groups || []).length === 0) {
+      setSelectedGroupId(null);
+    }
+  }, [groups]);
 
   const handleUninstall = (skill: InstalledSkill) => {
     setConfirmDialog({
@@ -439,7 +504,113 @@ const UnifiedSkillsPanel = React.forwardRef<
               {t("skills.noInstalledDescription")}
             </p>
           </div>
+        ) : groups && groups.length > 0 ? (
+          /* Sidebar + flat list layout when groups exist */
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={(event) =>
+              setActiveDragSkillId(event.active.id as string)
+            }
+            onDragEnd={handleDragEnd}
+            onDragCancel={() => setActiveDragSkillId(null)}
+          >
+            <div className="flex h-full">
+              <GroupSidebar
+                groups={groups}
+                members={members || []}
+                totalSkillCount={skills.length}
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={setSelectedGroupId}
+                onBatchToggleGroup={(groupId, enabled) =>
+                  batchToggleGroupMutation.mutate({
+                    groupId,
+                    app: currentApp,
+                    enabled,
+                  })
+                }
+                onCreateGroup={(name) => createGroupMutation.mutate(name)}
+                onUpdateGroup={(id, name) =>
+                  updateGroupMutation.mutate({ id, name })
+                }
+                onDeleteGroup={(id) => deleteGroupMutation.mutate(id)}
+              />
+
+              <div className="flex-1 overflow-y-auto pl-4">
+                {/* Filter indicator */}
+                {selectedGroupId !== null && (
+                  <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
+                    <span>
+                      {groups?.find((g) => g.id === selectedGroupId)?.name ??
+                        ""}{" "}
+                      ({filteredSkills.length})
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs h-6"
+                      onClick={() => setSelectedGroupId(null)}
+                    >
+                      {t("common.clear")}
+                    </Button>
+                  </div>
+                )}
+
+                <TooltipProvider delayDuration={300}>
+                  <div className="rounded-xl border border-border-default overflow-hidden">
+                    {filteredSkills.length > 0 ? (
+                      filteredSkills.map((skill, index) => (
+                        <DraggableSkillRow
+                          key={skill.id}
+                          skill={skill}
+                          hasUpdate={!!updatesMap[skill.id]}
+                          isUpdating={
+                            updateSkillMutation.isPending &&
+                            updateSkillMutation.variables === skill.id
+                          }
+                          onToggleApp={handleToggleApp}
+                          onUninstall={() => handleUninstall(skill)}
+                          onUpdate={() => handleUpdateSkill(skill)}
+                          isLast={index === filteredSkills.length - 1}
+                          groups={groups || []}
+                          members={members || []}
+                        />
+                      ))
+                    ) : (
+                      <div className="py-10 text-center text-sm text-muted-foreground">
+                        {t("skills.groups.empty")}
+                      </div>
+                    )}
+                  </div>
+                </TooltipProvider>
+              </div>
+            </div>
+
+            <DragOverlay dropAnimation={null}>
+              {activeDragSkillId
+                ? (() => {
+                    const skill = skills.find(
+                      (s) => s.id === activeDragSkillId,
+                    );
+                    if (!skill) return null;
+                    return (
+                      <div className="opacity-90 bg-background border border-primary/30 rounded-lg px-4 py-2 shadow-xl max-w-xs">
+                        <span className="font-medium text-sm truncate block">
+                          {skill.name}
+                        </span>
+                        {skill.description && (
+                          <p className="text-xs text-muted-foreground truncate">
+                            {skill.description}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()
+                : null}
+            </DragOverlay>
+          </DndContext>
         ) : (
+          /* No groups: keep existing layout */
           <TooltipProvider delayDuration={300}>
             <SkillGroupList
               skills={skills}
