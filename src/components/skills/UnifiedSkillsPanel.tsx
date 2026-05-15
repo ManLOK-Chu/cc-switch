@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Sparkles, RefreshCw, Loader2 } from "lucide-react";
 import {
@@ -42,6 +48,7 @@ import { GroupSidebar } from "./GroupSidebar";
 import type { AppId } from "@/lib/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { skillsApi } from "@/lib/api";
+import { useSettingsQuery, useSaveSettingsMutation } from "@/lib/query";
 import { toast } from "sonner";
 import { SKILLS_APP_IDS } from "@/config/appConfig";
 import { AppCountBar } from "@/components/common/AppCountBar";
@@ -174,6 +181,123 @@ const UnifiedSkillsPanel = React.forwardRef<
   const [activeDragSkillId, setActiveDragSkillId] = useState<string | null>(
     null,
   );
+
+  // Sidebar resize state
+  const MIN_SIDEBAR_WIDTH = 160;
+  const MAX_SIDEBAR_WIDTH = 400;
+  const DEFAULT_SIDEBAR_WIDTH = 200;
+  const KEYBOARD_RESIZE_STEP = 8;
+
+  const { data: settings } = useSettingsQuery();
+  const saveSettingsMutation = useSaveSettingsMutation();
+  const saveSettingsMutationRef = useRef(saveSettingsMutation);
+  saveSettingsMutationRef.current = saveSettingsMutation;
+
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(0);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore width from persisted settings
+  useEffect(() => {
+    if (settings?.skillsSidebarWidth) {
+      const saved = settings.skillsSidebarWidth;
+      if (saved >= MIN_SIDEBAR_WIDTH && saved <= MAX_SIDEBAR_WIDTH) {
+        setSidebarWidth(saved);
+      }
+    }
+  }, [settings?.skillsSidebarWidth]);
+
+  // Resize drag logic
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsResizing(true);
+      resizeStartXRef.current = e.clientX;
+      resizeStartWidthRef.current = sidebarWidth;
+    },
+    [sidebarWidth],
+  );
+
+  const handleResizeKeyDown = useCallback((e: React.KeyboardEvent) => {
+    switch (e.key) {
+      case "ArrowLeft":
+        e.preventDefault();
+        setSidebarWidth((w) =>
+          Math.max(MIN_SIDEBAR_WIDTH, w - KEYBOARD_RESIZE_STEP),
+        );
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        setSidebarWidth((w) =>
+          Math.min(MAX_SIDEBAR_WIDTH, w + KEYBOARD_RESIZE_STEP),
+        );
+        break;
+      case "Home":
+        e.preventDefault();
+        setSidebarWidth(MIN_SIDEBAR_WIDTH);
+        break;
+      case "End":
+        e.preventDefault();
+        setSidebarWidth(MAX_SIDEBAR_WIDTH);
+        break;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - resizeStartXRef.current;
+      const newWidth = Math.max(
+        MIN_SIDEBAR_WIDTH,
+        Math.min(MAX_SIDEBAR_WIDTH, resizeStartWidthRef.current + delta),
+      );
+      setSidebarWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isResizing]);
+
+  // Debounced persistence
+  useEffect(() => {
+    if (!settings || isResizing) return;
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    saveTimeoutRef.current = setTimeout(() => {
+      if (sidebarWidth !== settings.skillsSidebarWidth) {
+        saveSettingsMutationRef.current.mutate({
+          ...settings,
+          skillsSidebarWidth: sidebarWidth,
+        });
+      }
+    }, 500);
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [sidebarWidth, isResizing, settings]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -525,6 +649,26 @@ const UnifiedSkillsPanel = React.forwardRef<
                   updateGroupMutation.mutate({ id, name })
                 }
                 onDeleteGroup={(id) => deleteGroupMutation.mutate(id)}
+                width={sidebarWidth}
+              />
+
+              {/* Resize Handle */}
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-valuenow={sidebarWidth}
+                aria-valuemin={MIN_SIDEBAR_WIDTH}
+                aria-valuemax={MAX_SIDEBAR_WIDTH}
+                aria-label={t("skills.groups.resizeHandle")}
+                tabIndex={0}
+                className={`relative flex-shrink-0 w-[4px] cursor-col-resize transition-colors z-10 focus:outline-none focus-visible:bg-primary/40 ${
+                  isResizing
+                    ? "bg-primary/40"
+                    : "bg-transparent hover:bg-primary/20"
+                }`}
+                onMouseDown={handleResizeStart}
+                onKeyDown={handleResizeKeyDown}
+                title={t("skills.groups.resizeHandle")}
               />
 
               <div className="flex-1 overflow-y-auto pl-4">

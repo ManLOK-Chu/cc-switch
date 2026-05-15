@@ -343,6 +343,9 @@ export interface Settings {
   // Windows: "cmd" | "powershell" | "wt"
   // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
+
+  // ===== Skill 分组侧边栏宽度 =====
+  skillsSidebarWidth?: number;
 }
 
 export interface SessionMeta {

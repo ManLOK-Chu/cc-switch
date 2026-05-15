@@ -1985,7 +1985,8 @@
       "createTitle": "グループを作成",
       "editTitle": "グループを編集",
       "namePlaceholder": "グループ名",
-      "moveTo": "グループに移動"
+      "moveTo": "グループに移動",
+      "resizeHandle": "ドラッグでサイドバーの幅を調整"
     }
   },
   "deeplink": {

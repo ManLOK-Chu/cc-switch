@@ -124,6 +124,7 @@ interface GroupSidebarProps {
   onCreateGroup?: (name: string) => void;
   onUpdateGroup?: (id: string, name: string) => void;
   onDeleteGroup?: (id: string) => void;
+  width: number;
 }
 
 export function GroupSidebar({
@@ -136,6 +137,7 @@ export function GroupSidebar({
   onCreateGroup,
   onUpdateGroup,
   onDeleteGroup,
+  width,
 }: GroupSidebarProps) {
   const { t } = useTranslation();
   const [newGroupDialogOpen, setNewGroupDialogOpen] = React.useState(false);
@@ -164,7 +166,10 @@ export function GroupSidebar({
   const sortedGroups = [...groups].sort((a, b) => a.sortIndex - b.sortIndex);
 
   return (
-    <div className="w-[200px] flex-shrink-0 border-r border-border-default flex flex-col h-full overflow-y-auto">
+    <div
+      className="flex-shrink-0 border-r border-border-default flex flex-col h-full overflow-y-auto"
+      style={{ width }}
+    >
       <div className="p-2 space-y-1">
         {/* Default group */}
         <DroppableGroupItem

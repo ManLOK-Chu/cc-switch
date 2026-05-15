@@ -1985,7 +1985,8 @@
       "createTitle": "Create Group",
       "editTitle": "Edit Group",
       "namePlaceholder": "Group name",
-      "moveTo": "Move to group"
+      "moveTo": "Move to group",
+      "resizeHandle": "Drag to resize sidebar"
     }
   },
   "deeplink": {

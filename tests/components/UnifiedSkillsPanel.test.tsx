@@ -128,6 +128,11 @@ vi.mock("@dnd-kit/utilities", () => ({
   CSS: { Translate: { toString: vi.fn(() => "") } },
 }));
 
+vi.mock("@/lib/query", () => ({
+  useSettingsQuery: () => ({ data: null }),
+  useSaveSettingsMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+}));
+
 describe("UnifiedSkillsPanel", () => {
   beforeEach(() => {
     mockGroupsData = [];

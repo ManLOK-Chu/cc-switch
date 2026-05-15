@@ -1985,7 +1985,8 @@
       "createTitle": "新建分组",
       "editTitle": "编辑分组",
       "namePlaceholder": "分组名称",
-      "moveTo": "移动到分组"
+      "moveTo": "移动到分组",
+      "resizeHandle": "拖拽调整侧边栏宽度"
     }
   },
   "deeplink": {

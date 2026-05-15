@@ -34,6 +34,9 @@ export const settingsSchema = z.object({
   skillSyncMethod: z.enum(["auto", "symlink", "copy"]).optional(),
   skillStorageLocation: z.enum(["cc_switch", "unified"]).optional(),
 
+  // Skill 分组侧边栏宽度
+  skillsSidebarWidth: z.number().min(160).max(400).optional(),
+
   // WebDAV v2 同步设置（通过专用命令保存，schema 仅用于读取）
   webdavSync: z
     .object({
