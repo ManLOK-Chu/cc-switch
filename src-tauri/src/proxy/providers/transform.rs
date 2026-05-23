@@ -648,7 +648,7 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
 
     // usage — map cache tokens from OpenAI format to Anthropic format
     let usage = body.get("usage").cloned().unwrap_or(json!({}));
-    let input_tokens = usage
+    let raw_prompt_tokens = usage
         .get("prompt_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
@@ -657,21 +657,35 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
 
+    // OpenAI nested format: prompt_tokens_details.cached_tokens
+    let openai_cache_read = usage
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(|v| v.as_u64());
+
+    // Compatible servers returning Anthropic-style direct fields
+    let direct_cache_read = usage
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64());
+
+    // OpenAI's prompt_tokens includes cache reads. If the cache came from
+    // the OpenAI nested format (not a direct Anthropic-style field),
+    // subtract it so input_tokens matches Anthropic's fresh semantics.
+    let input_tokens = if direct_cache_read.is_none() {
+        raw_prompt_tokens.saturating_sub(openai_cache_read.unwrap_or(0) as u32)
+    } else {
+        raw_prompt_tokens
+    };
+
     let mut usage_json = json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens
     });
 
-    // OpenAI standard: prompt_tokens_details.cached_tokens
-    if let Some(cached) = usage
-        .pointer("/prompt_tokens_details/cached_tokens")
-        .and_then(|v| v.as_u64())
-    {
+    if let Some(cached) = openai_cache_read {
         usage_json["cache_read_input_tokens"] = json!(cached);
     }
-    // Some compatible servers return these fields directly
-    if let Some(v) = usage.get("cache_read_input_tokens") {
-        usage_json["cache_read_input_tokens"] = v.clone();
+    if let Some(v) = direct_cache_read {
+        usage_json["cache_read_input_tokens"] = json!(v);
     }
     if let Some(v) = usage.get("cache_creation_input_tokens") {
         usage_json["cache_creation_input_tokens"] = v.clone();
@@ -1492,7 +1506,9 @@ mod tests {
         });
 
         let result = openai_to_anthropic(input).unwrap();
-        assert_eq!(result["usage"]["input_tokens"], 100);
+        // OpenAI nested format: prompt_tokens (100) includes cached_tokens (80).
+        // After fix, input_tokens should be fresh: 100 - 80 = 20.
+        assert_eq!(result["usage"]["input_tokens"], 20);
         assert_eq!(result["usage"]["output_tokens"], 50);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 80);
     }
@@ -1516,6 +1532,9 @@ mod tests {
         });
 
         let result = openai_to_anthropic(input).unwrap();
+        // Direct cache_read_input_tokens field: provider follows Anthropic
+        // semantics where prompt_tokens is already fresh — no subtraction.
+        assert_eq!(result["usage"]["input_tokens"], 100);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 60);
         assert_eq!(result["usage"]["cache_creation_input_tokens"], 20);
     }
