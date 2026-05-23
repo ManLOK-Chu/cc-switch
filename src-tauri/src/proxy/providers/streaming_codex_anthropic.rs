@@ -616,7 +616,7 @@ pub fn create_responses_sse_stream_from_anthropic<E: std::error::Error + Send + 
         // Safety: if stream ended without message_stop, emit response.completed
         if finish_reason.is_none() {
             let status = "completed";
-            let mut response_obj = json!({
+            let response_obj = json!({
                 "id": response_id,
                 "object": "response",
                 "status": status,

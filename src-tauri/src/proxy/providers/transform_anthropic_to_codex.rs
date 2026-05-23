@@ -134,7 +134,6 @@ pub fn anthropic_to_responses_response(body: Value) -> Result<Value, ProxyError>
         .unwrap_or_default();
 
     let mut output: Vec<Value> = Vec::new();
-    let mut has_tool_use = false;
 
     // Check for reasoning/thinking first
     let thinking_text = content_blocks
@@ -189,7 +188,6 @@ pub fn anthropic_to_responses_response(body: Value) -> Result<Value, ProxyError>
     // Tool calls
     for block in &content_blocks {
         if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-            has_tool_use = true;
             let tc_id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let input = block.get("input").cloned().unwrap_or(json!({}));
