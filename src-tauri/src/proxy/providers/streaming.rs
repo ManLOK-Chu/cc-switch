@@ -100,11 +100,30 @@ struct ToolBlockState {
 const INFINITE_WHITESPACE_THRESHOLD: usize = 500;
 
 fn build_anthropic_usage_json(usage: &Usage) -> Value {
+    // OpenAI's prompt_tokens includes cache reads; Anthropic's input_tokens
+    // does not. When cache data comes from the OpenAI nested format
+    // (prompt_tokens_details.cached_tokens), subtract it so downstream
+    // stats see fresh input_tokens semantics.
+    let cache_read = extract_cache_read_tokens(usage);
+    let input_tokens = if usage.cache_read_input_tokens.is_none() {
+        // Cache read came from OpenAI nested format → prompt_tokens includes cache.
+        usage.prompt_tokens.saturating_sub(
+            usage
+                .prompt_tokens_details
+                .as_ref()
+                .map(|d| d.cached_tokens)
+                .unwrap_or(0),
+        )
+    } else {
+        // Direct cache_read_input_tokens → provider follows Anthropic semantics.
+        usage.prompt_tokens
+    };
+
     let mut usage_json = json!({
-        "input_tokens": usage.prompt_tokens,
+        "input_tokens": input_tokens,
         "output_tokens": usage.completion_tokens
     });
-    if let Some(cached) = extract_cache_read_tokens(usage) {
+    if let Some(cached) = cache_read {
         usage_json["cache_read_input_tokens"] = json!(cached);
     }
     if let Some(created) = usage.cache_creation_input_tokens {
@@ -1020,7 +1039,9 @@ mod tests {
             message_delta
                 .pointer("/usage/input_tokens")
                 .and_then(|v| v.as_u64()),
-            Some(13312)
+            // prompt_tokens (13312) includes cached_tokens (100);
+            // input_tokens should be fresh: 13312 - 100 = 13212
+            Some(13212)
         );
         assert_eq!(
             message_delta
