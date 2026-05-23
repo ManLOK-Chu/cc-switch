@@ -283,6 +283,63 @@ impl ProxyService {
         Ok(())
     }
 
+    pub async fn sync_codex_live_from_provider_while_proxy_active(
+        &self,
+        provider: &Provider,
+    ) -> Result<(), String> {
+        let mut live_config = self.read_codex_live()?;
+        let (_, proxy_codex_base_url) = self.build_proxy_urls().await?;
+
+        // Extract model from the new provider's config TOML
+        let new_model = provider
+            .settings_config
+            .get("config")
+            .and_then(|v| v.as_str())
+            .and_then(|config_str| {
+                config_str.parse::<toml_edit::DocumentMut>().ok().and_then(|doc| {
+                    doc.get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+            });
+
+        // Update config.toml with proxy settings and new model
+        let config_str = live_config
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mut updated_config =
+            Self::apply_codex_proxy_toml_config(config_str, &proxy_codex_base_url);
+
+        if let Some(ref model) = new_model {
+            updated_config = crate::codex_config::update_codex_toml_field(
+                &updated_config,
+                "model",
+                model,
+            )
+            .map_err(|e| format!("更新 Codex model 字段失败: {e}"))?;
+        }
+
+        live_config["config"] = json!(updated_config);
+
+        // Update auth placeholder
+        if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
+            auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+        }
+
+        self.write_codex_live(&live_config)?;
+
+        if let Some(ref model) = new_model {
+            log::info!(
+                "Codex Live 配置已热切换，模型: {model}，代理地址: {proxy_codex_base_url}"
+            );
+        } else {
+            log::info!("Codex Live 配置已热切换，代理地址: {proxy_codex_base_url}");
+        }
+
+        Ok(())
+    }
+
     fn get_current_provider_for_app(&self, app_type: &AppType) -> Result<Option<Provider>, String> {
         let Some(current_id) = crate::settings::get_effective_current_provider(&self.db, app_type)
             .map_err(|e| format!("获取 {app_type:?} 当前供应商失败: {e}"))?
@@ -1657,6 +1714,10 @@ impl ProxyService {
                     &mut effective_settings,
                     existing_value,
                 )?;
+                Self::preserve_codex_projects_in_backup(
+                    &mut effective_settings,
+                    existing_value,
+                )?;
             }
 
             let anchor_config_text = existing_backup_value
@@ -1749,6 +1810,10 @@ impl ProxyService {
                 self.sync_claude_live_from_provider_while_proxy_active(&provider)
                     .await?;
             }
+            if matches!(app_type_enum, AppType::Codex) {
+                self.sync_codex_live_from_provider_while_proxy_active(&provider)
+                    .await?;
+            }
         }
 
         if let Some(server) = self.server.read().await.as_ref() {
@@ -1820,6 +1885,67 @@ impl ProxyService {
                 }
                 None => {
                     target_doc["mcp_servers"] = existing_mcp_servers.clone();
+                }
+            }
+        }
+
+        target_obj.insert("config".to_string(), json!(target_doc.to_string()));
+        Ok(())
+    }
+
+    fn preserve_codex_projects_in_backup(
+        target_settings: &mut Value,
+        existing_backup: &Value,
+    ) -> Result<(), String> {
+        let target_obj = target_settings
+            .as_object_mut()
+            .ok_or_else(|| "Codex 备份必须是 JSON 对象".to_string())?;
+
+        let target_config = target_obj
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mut target_doc = if target_config.trim().is_empty() {
+            toml_edit::DocumentMut::new()
+        } else {
+            target_config
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| format!("解析新的 Codex config.toml 失败: {e}"))?
+        };
+
+        let existing_config = existing_backup
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if existing_config.trim().is_empty() {
+            target_obj.insert("config".to_string(), json!(target_doc.to_string()));
+            return Ok(());
+        }
+
+        let existing_doc = existing_config
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("解析现有 Codex 备份失败: {e}"))?;
+
+        if let Some(existing_projects) = existing_doc.get("projects") {
+            match target_doc.get_mut("projects") {
+                Some(target_projects) => {
+                    if let (Some(target_table), Some(existing_table)) = (
+                        target_projects.as_table_like_mut(),
+                        existing_projects.as_table_like(),
+                    ) {
+                        for (project_key, project_item) in existing_table.iter() {
+                            if target_table.get(project_key).is_none() {
+                                target_table.insert(project_key, project_item.clone());
+                            }
+                        }
+                    } else {
+                        log::warn!(
+                            "Codex config contains a non-table projects section; skipping backup projects merge"
+                        );
+                    }
+                }
+                None => {
+                    target_doc["projects"] = existing_projects.clone();
                 }
             }
         }
@@ -3037,6 +3163,84 @@ base_url = "https://new.example/v1"
         assert!(
             config.contains("[mcp_servers.echo]"),
             "existing Codex MCP section should survive proxy hot-switch backup update"
+        );
+        assert!(
+            config.contains("https://new.example/v1"),
+            "provider-specific base_url should still update to the new provider"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn update_live_backup_from_provider_preserves_codex_projects() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&json!({
+                "auth": {
+                    "OPENAI_API_KEY": "old-token"
+                },
+                "config": r#"model_provider = "any"
+model = "gpt-4"
+
+[model_providers.any]
+base_url = "https://old.example/v1"
+
+[projects."/Users/test/mcp-project"]
+trust_level = "trusted"
+"#
+            }))
+            .expect("serialize seed backup"),
+        )
+        .await
+        .expect("seed live backup");
+
+        let provider = Provider::with_id(
+            "p2".to_string(),
+            "P2".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "new-token"
+                },
+                "config": r#"model_provider = "any"
+model = "gpt-5"
+
+[model_providers.any]
+base_url = "https://new.example/v1"
+"#
+            }),
+            None,
+        );
+
+        service
+            .update_live_backup_from_provider("codex", &provider)
+            .await
+            .expect("update live backup");
+
+        let backup = db
+            .get_live_backup("codex")
+            .await
+            .expect("get live backup")
+            .expect("backup exists");
+        let stored: Value =
+            serde_json::from_str(&backup.original_config).expect("parse backup json");
+        let config = stored
+            .get("config")
+            .and_then(|v| v.as_str())
+            .expect("config string");
+
+        assert!(
+            config.contains("[projects.\"/Users/test/mcp-project\"]"),
+            "existing Codex projects.* section should survive proxy hot-switch backup update"
+        );
+        assert!(
+            config.contains("trust_level = \"trusted\""),
+            "project trust level should be preserved"
         );
         assert!(
             config.contains("https://new.example/v1"),
