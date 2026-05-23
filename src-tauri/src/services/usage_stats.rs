@@ -83,6 +83,9 @@ pub struct ProviderStats {
     pub total_cost: String,
     pub success_rate: f32,
     pub avg_latency_ms: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub cache_hit_rate: f64,
 }
 
 /// 模型统计
@@ -94,6 +97,9 @@ pub struct ModelStats {
     pub total_tokens: u64,
     pub total_cost: String,
     pub avg_cost_per_request: String,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub cache_hit_rate: f64,
 }
 
 /// 请求日志过滤器
@@ -1040,7 +1046,10 @@ impl Database {
                 SUM(success_count) as success_count,
                 CASE WHEN SUM(request_count) > 0
                     THEN SUM(latency_sum) / SUM(request_count)
-                    ELSE 0 END as avg_latency
+                    ELSE 0 END as avg_latency,
+                SUM(cache_read_tokens) as cache_read_tokens,
+                SUM(cache_creation_tokens) as cache_creation_tokens,
+                SUM(fresh_input) as fresh_input
             FROM (
                 SELECT l.provider_id, l.app_type,
                     {detail_pname} as provider_name,
@@ -1048,7 +1057,10 @@ impl Database {
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
                     COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
-                    COALESCE(SUM(l.latency_ms), 0) as latency_sum
+                    COALESCE(SUM(l.latency_ms), 0) as latency_sum,
+                    COALESCE(SUM(l.cache_read_tokens), 0) as cache_read_tokens,
+                    COALESCE(SUM(l.cache_creation_tokens), 0) as cache_creation_tokens,
+                    COALESCE(SUM({fresh_input_detail}), 0) as fresh_input
                 FROM proxy_request_logs l
                 LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
                 {detail_where}
@@ -1060,7 +1072,10 @@ impl Database {
                     COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
                     COALESCE(SUM(r.success_count), 0),
-                    COALESCE(SUM(r.avg_latency_ms * r.request_count), 0)
+                    COALESCE(SUM(r.avg_latency_ms * r.request_count), 0),
+                    COALESCE(SUM(r.cache_read_tokens), 0),
+                    COALESCE(SUM(r.cache_creation_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup}), 0)
                 FROM usage_daily_rollups r
                 LEFT JOIN providers p2 ON r.provider_id = p2.id AND r.app_type = p2.app_type
                 {rollup_where}
@@ -1082,6 +1097,15 @@ impl Database {
             } else {
                 0.0
             };
+            let cache_read: f64 = row.get::<_, i64>(8)? as f64;
+            let cache_creation: f64 = row.get::<_, i64>(9)? as f64;
+            let fresh_input: f64 = row.get::<_, i64>(10)? as f64;
+            let cacheable_input = fresh_input + cache_read + cache_creation;
+            let cache_hit_rate = if cacheable_input > 0.0 {
+                cache_read / cacheable_input
+            } else {
+                0.0
+            };
 
             Ok(ProviderStats {
                 provider_id: row.get(0)?,
@@ -1091,6 +1115,9 @@ impl Database {
                 total_cost: format!("{:.6}", row.get::<_, f64>(5)?),
                 success_rate,
                 avg_latency_ms: row.get::<_, f64>(7)? as u64,
+                total_cache_read_tokens: cache_read as u64,
+                total_cache_creation_tokens: cache_creation as u64,
+                cache_hit_rate,
             })
         };
 
@@ -1160,12 +1187,18 @@ impl Database {
                 model,
                 SUM(request_count) as request_count,
                 SUM(total_tokens) as total_tokens,
-                SUM(total_cost) as total_cost
+                SUM(total_cost) as total_cost,
+                SUM(cache_read_tokens) as cache_read_tokens,
+                SUM(cache_creation_tokens) as cache_creation_tokens,
+                SUM(fresh_input) as fresh_input
             FROM (
                 SELECT l.model,
                     COUNT(*) as request_count,
                     COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
+                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(l.cache_read_tokens), 0) as cache_read_tokens,
+                    COALESCE(SUM(l.cache_creation_tokens), 0) as cache_creation_tokens,
+                    COALESCE(SUM({fresh_input_detail}), 0) as fresh_input
                 FROM proxy_request_logs l
                 {detail_where}
                 GROUP BY l.model
@@ -1173,7 +1206,10 @@ impl Database {
                 SELECT r.model,
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
-                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0)
+                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                    COALESCE(SUM(r.cache_read_tokens), 0),
+                    COALESCE(SUM(r.cache_creation_tokens), 0),
+                    COALESCE(SUM({fresh_input_rollup}), 0)
                 FROM usage_daily_rollups r
                 {rollup_where}
                 GROUP BY r.model
@@ -1194,6 +1230,15 @@ impl Database {
             } else {
                 0.0
             };
+            let cache_read: f64 = row.get::<_, i64>(4)? as f64;
+            let cache_creation: f64 = row.get::<_, i64>(5)? as f64;
+            let fresh_input: f64 = row.get::<_, i64>(6)? as f64;
+            let cacheable_input = fresh_input + cache_read + cache_creation;
+            let cache_hit_rate = if cacheable_input > 0.0 {
+                cache_read / cacheable_input
+            } else {
+                0.0
+            };
 
             Ok(ModelStats {
                 model: row.get(0)?,
@@ -1201,6 +1246,9 @@ impl Database {
                 total_tokens: row.get::<_, i64>(2)? as u64,
                 total_cost: format!("{total_cost:.6}"),
                 avg_cost_per_request: format!("{avg_cost:.6}"),
+                total_cache_read_tokens: cache_read as u64,
+                total_cache_creation_tokens: cache_creation as u64,
+                cache_hit_rate,
             })
         };
 

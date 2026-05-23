@@ -101,6 +101,9 @@ export interface ProviderStats {
   totalCost: string;
   successRate: number;
   avgLatencyMs: number;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  cacheHitRate: number;
 }
 
 export interface ModelStats {
@@ -109,6 +112,9 @@ export interface ModelStats {
   totalTokens: number;
   totalCost: string;
   avgCostPerRequest: string;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  cacheHitRate: number;
 }
 
 export interface LogFilters {
