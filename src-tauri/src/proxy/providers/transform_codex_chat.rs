@@ -48,6 +48,12 @@ pub fn responses_to_chat_completions(body: Value) -> Result<Value, ProxyError> {
     if let Some(input) = body.get("input") {
         append_responses_input_as_chat_messages(input, &mut messages)?;
     }
+    // 规范化消息结构，防止上游 API 因格式不规范而拒绝请求
+    // 参考 Nyro 的 IR repair + encoder 层修复
+    patch_broken_conversation(&mut messages);
+    remap_duplicate_tool_call_ids(&mut messages);
+    prune_orphan_assistant_tool_calls(&mut messages);
+    prune_empty_assistant_messages(&mut messages);
     result["messages"] = json!(messages);
 
     let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("");
@@ -204,6 +210,8 @@ fn flush_pending_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut 
 
 fn responses_message_item_to_chat_message(item: &Value) -> Value {
     let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+    // Chat Completions API 不支持 "developer" role（这是 Responses API 专有 role），映射为 "system"
+    let role = if role == "developer" { "system" } else { role };
     let content = item
         .get("content")
         .map(|value| responses_content_to_chat_content(role, value))
@@ -673,6 +681,151 @@ pub(crate) fn response_status_from_finish_reason(finish_reason: Option<&str>) ->
     }
 }
 
+// ── 消息规范化（参考 Nyro IR repair + encoder）─────────────────────────────
+
+/// 确保 conversation 不以裸 `role: "assistant"` 文本消息开头，防止上游 API 拒绝。
+/// 仅当首条 Assistant 消息无 tool_calls（即纯文本回复）时才前置空 User 消息。
+/// 以 tool_calls 开头的 Assistant 是 conversation 续接的正常模式（来自 Responses API
+/// 的 function_call 输入项），不需要修复。
+#[allow(clippy::ptr_arg)]
+fn patch_broken_conversation(messages: &mut Vec<Value>) {
+    let first = match messages.first() {
+        Some(m) => m,
+        None => return,
+    };
+    let is_assistant =
+        first.get("role").and_then(|v| v.as_str()) == Some("assistant");
+    let has_tool_calls = first
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty());
+
+    if is_assistant && !has_tool_calls {
+        messages.insert(0, json!({"role": "user", "content": ""}));
+    }
+}
+
+/// 扫描并唯一化重复的 `tool_call_id`。
+///
+/// - Assistant 消息的 `tool_calls[].id`：相同 id 第二次出现时追加 `_dup2`、`_dup3` ...
+/// - Tool 消息的 `tool_call_id`：若原始值匹配被重映射的 id，替换为唯一化版本（栈弹出）
+#[allow(clippy::ptr_arg)]
+fn remap_duplicate_tool_call_ids(messages: &mut Vec<Value>) {
+    use std::collections::HashMap;
+
+    let mut seen_counts: HashMap<String, usize> = HashMap::new();
+    // original_id → 栈（新的唯一 id 列表，按生成顺序排列）
+    let mut pending_by_original: HashMap<String, Vec<String>> = HashMap::new();
+
+    for msg in messages.iter_mut() {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+
+        if role == "assistant" {
+            if let Some(tool_calls) = msg.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
+                for tc in tool_calls.iter_mut() {
+                    let original = tc
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "call_0".to_string());
+
+                    let count = seen_counts.entry(original.clone()).or_insert(0);
+                    *count += 1;
+                    let unique = if *count == 1 {
+                        original.clone()
+                    } else {
+                        format!("{}_dup{}", original, *count)
+                    };
+                    tc["id"] = json!(unique.clone());
+                    pending_by_original
+                        .entry(original)
+                        .or_default()
+                        .push(unique);
+                }
+            }
+        } else if role == "tool" {
+            if let Some(original_id) = msg
+                .get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+            {
+                if let Some(stack) = pending_by_original.get_mut(&original_id) {
+                    if let Some(unique_id) = stack.pop() {
+                        msg["tool_call_id"] = json!(unique_id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 移除 Assistant 消息中未被任何 Tool 消息引用的 tool_call 条目。
+#[allow(clippy::ptr_arg)]
+fn prune_orphan_assistant_tool_calls(messages: &mut Vec<Value>) {
+    use std::collections::HashSet;
+
+    let referenced: HashSet<String> = messages
+        .iter()
+        .filter(|m| {
+            m.get("role")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r == "tool")
+        })
+        .filter_map(|m| {
+            m.get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    if referenced.is_empty() {
+        return;
+    }
+
+    for msg in messages.iter_mut() {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "assistant" {
+            continue;
+        }
+        if let Some(calls) = msg.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
+            calls.retain(|tc| {
+                tc.get("id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| referenced.contains(id))
+            });
+            if calls.is_empty() {
+                if let Some(obj) = msg.as_object_mut() {
+                    obj.remove("tool_calls");
+                }
+            }
+        }
+    }
+}
+
+/// 移除无 tool_calls 且无实质文本内容的空 Assistant 消息。
+fn prune_empty_assistant_messages(messages: &mut Vec<Value>) {
+    messages.retain(|msg| {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "assistant" {
+            return true;
+        }
+        let has_calls = msg
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty());
+        if has_calls {
+            return true;
+        }
+        // 有实质文本内容则保留
+        msg.get("content")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,5 +1037,127 @@ mod tests {
 
         assert_eq!(result["status"], "incomplete");
         assert_eq!(result["incomplete_details"]["reason"], "max_output_tokens");
+    }
+
+    #[test]
+    fn responses_request_to_chat_maps_developer_role_to_system() {
+        let input = json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                {
+                    "role": "developer",
+                    "content": "You are a coding agent."
+                },
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        });
+
+        let result = responses_to_chat_completions(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are a coding agent.");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "hello");
+    }
+
+    // ── 消息规范化测试 ──────────────────────────────────────────────────
+
+    #[test]
+    fn patch_broken_conversation_adds_user_when_starts_with_bare_assistant() {
+        let mut messages = vec![
+            json!({"role": "assistant", "content": "hi"}),
+            json!({"role": "user", "content": "hello"}),
+        ];
+        patch_broken_conversation(&mut messages);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "");
+        assert_eq!(messages[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn patch_broken_conversation_noop_when_starts_with_assistant_tool_calls() {
+        // function_call 输入项产生的 assistant+tool_calls 是正常模式，不应修补
+        let mut messages = vec![
+            json!({"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": "ok"}),
+        ];
+        let original_len = messages.len();
+        patch_broken_conversation(&mut messages);
+        assert_eq!(messages.len(), original_len);
+    }
+
+    #[test]
+    fn patch_broken_conversation_noop_when_starts_with_user() {
+        let mut messages = vec![json!({"role": "user", "content": "hello"})];
+        let original_len = messages.len();
+        patch_broken_conversation(&mut messages);
+        assert_eq!(messages.len(), original_len);
+        assert_eq!(messages[0]["role"], "user");
+    }
+
+    #[test]
+    fn remap_duplicate_tool_call_ids_unique_no_change() {
+        let mut messages = vec![
+            json!({"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+        ];
+        remap_duplicate_tool_call_ids(&mut messages);
+        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn remap_duplicate_tool_call_ids_renames_and_remaps() {
+        let mut messages = vec![
+            json!({"role": "assistant", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                {"id": "call_1", "type": "function", "function": {"name": "g", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "first"}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "second"}),
+        ];
+        remap_duplicate_tool_call_ids(&mut messages);
+        // 第二个 call_1 被重命名为 call_1_dup2
+        assert_eq!(messages[0]["tool_calls"][1]["id"], "call_1_dup2");
+        // Tool 消息按 LIFO 顺序弹出（后进先出）
+        assert_eq!(messages[1]["tool_call_id"], "call_1_dup2");
+        assert_eq!(messages[2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn prune_orphan_tool_calls_removes_unreferenced() {
+        let mut messages = vec![
+            json!({"role": "assistant", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                {"id": "call_orphan", "type": "function", "function": {"name": "g", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+        ];
+        prune_orphan_assistant_tool_calls(&mut messages);
+        let calls = messages[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_1");
+    }
+
+    #[test]
+    fn prune_empty_assistant_messages_keeps_non_empty() {
+        let mut messages = vec![
+            json!({"role": "assistant", "content": "hi"}),
+            json!({"role": "assistant", "content": ""}),
+            json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}),
+            json!({"role": "assistant"}),
+            json!({"role": "user", "content": "hello"}),
+        ];
+        prune_empty_assistant_messages(&mut messages);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["content"], "hi");
+        assert!(messages[1]["tool_calls"].is_array()); // 有 tool_calls 保留
+        assert_eq!(messages[2]["role"], "user");
     }
 }

@@ -955,6 +955,12 @@ impl RequestForwarder {
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
 
+        // Codex CLI 可能发送 "developer" role（Responses API 专有 role），
+        // 但 Chat Completions 上游通常只支持 system/user/assistant/tool
+        if matches!(app_type, AppType::Codex) {
+            mapped_body = normalize_chat_message_roles(mapped_body);
+        }
+
         if is_copilot {
             mapped_body =
                 super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
@@ -2339,6 +2345,22 @@ fn summarize_text_for_log(text: &str, max_chars: usize) -> String {
     format!("{truncated}...")
 }
 
+/// 将 Chat Completions 不支持的 "developer" role 映射为 "system"。
+///
+/// "developer" 是 OpenAI Responses API 专有 role，Chat Completions API
+/// 只接受 system/user/assistant/tool。Codex CLI 可能在任何端点发送
+/// "developer" 消息，因此需要在上行请求前规范化。
+fn normalize_chat_message_roles(mut body: Value) -> Value {
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages.iter_mut() {
+            if msg.get("role").and_then(|v| v.as_str()) == Some("developer") {
+                msg["role"] = json!("system");
+            }
+        }
+    }
+    body
+}
+
 /// 规范化 Anthropic Messages API 请求体中已知的兼容性问题。
 ///
 /// - `tool_choice`：将字符串简写（`"auto"`、`"none"`、`"any"`）转换为 Anthropic API 要求的对象格式。
@@ -3417,5 +3439,28 @@ mod tests {
             result["messages"][4]["content"],
             json!([{"type": "text", "text": "(empty)"}])
         );
+    }
+
+    #[test]
+    fn normalize_chat_message_roles_maps_developer_to_system() {
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role": "developer", "content": "You are a coding agent."},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+                {"role": "system", "content": "keep it brief"}
+            ],
+            "stream": true
+        });
+
+        let result = normalize_chat_message_roles(body);
+        let messages = result["messages"].as_array().unwrap();
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are a coding agent.");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[3]["role"], "system");
     }
 }
