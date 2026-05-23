@@ -693,8 +693,7 @@ fn patch_broken_conversation(messages: &mut Vec<Value>) {
         Some(m) => m,
         None => return,
     };
-    let is_assistant =
-        first.get("role").and_then(|v| v.as_str()) == Some("assistant");
+    let is_assistant = first.get("role").and_then(|v| v.as_str()) == Some("assistant");
     let has_tool_calls = first
         .get("tool_calls")
         .and_then(|v| v.as_array())

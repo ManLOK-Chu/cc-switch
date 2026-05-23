@@ -296,11 +296,14 @@ impl ProxyService {
             .get("config")
             .and_then(|v| v.as_str())
             .and_then(|config_str| {
-                config_str.parse::<toml_edit::DocumentMut>().ok().and_then(|doc| {
-                    doc.get("model")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
+                config_str
+                    .parse::<toml_edit::DocumentMut>()
+                    .ok()
+                    .and_then(|doc| {
+                        doc.get("model")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
             });
 
         // Update config.toml with proxy settings and new model
@@ -312,12 +315,9 @@ impl ProxyService {
             Self::apply_codex_proxy_toml_config(config_str, &proxy_codex_base_url);
 
         if let Some(ref model) = new_model {
-            updated_config = crate::codex_config::update_codex_toml_field(
-                &updated_config,
-                "model",
-                model,
-            )
-            .map_err(|e| format!("更新 Codex model 字段失败: {e}"))?;
+            updated_config =
+                crate::codex_config::update_codex_toml_field(&updated_config, "model", model)
+                    .map_err(|e| format!("更新 Codex model 字段失败: {e}"))?;
         }
 
         live_config["config"] = json!(updated_config);
@@ -330,9 +330,7 @@ impl ProxyService {
         self.write_codex_live(&live_config)?;
 
         if let Some(ref model) = new_model {
-            log::info!(
-                "Codex Live 配置已热切换，模型: {model}，代理地址: {proxy_codex_base_url}"
-            );
+            log::info!("Codex Live 配置已热切换，模型: {model}，代理地址: {proxy_codex_base_url}");
         } else {
             log::info!("Codex Live 配置已热切换，代理地址: {proxy_codex_base_url}");
         }
@@ -1714,10 +1712,7 @@ impl ProxyService {
                     &mut effective_settings,
                     existing_value,
                 )?;
-                Self::preserve_codex_projects_in_backup(
-                    &mut effective_settings,
-                    existing_value,
-                )?;
+                Self::preserve_codex_projects_in_backup(&mut effective_settings, existing_value)?;
             }
 
             let anchor_config_text = existing_backup_value
