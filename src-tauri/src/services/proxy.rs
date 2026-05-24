@@ -1708,11 +1708,7 @@ impl ProxyService {
                 .transpose()?;
 
             if let Some(existing_value) = existing_backup_value.as_ref() {
-                Self::preserve_codex_mcp_servers_in_backup(
-                    &mut effective_settings,
-                    existing_value,
-                )?;
-                Self::preserve_codex_projects_in_backup(&mut effective_settings, existing_value)?;
+                Self::merge_codex_backup_config(&mut effective_settings, existing_value)?;
             }
 
             let anchor_config_text = existing_backup_value
@@ -1827,7 +1823,7 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
-    fn preserve_codex_mcp_servers_in_backup(
+    fn merge_codex_backup_config(
         target_settings: &mut Value,
         existing_backup: &Value,
     ) -> Result<(), String> {
@@ -1835,117 +1831,17 @@ impl ProxyService {
             .as_object_mut()
             .ok_or_else(|| "Codex 备份必须是 JSON 对象".to_string())?;
 
-        let target_config = target_obj
-            .get("config")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let mut target_doc = if target_config.trim().is_empty() {
-            toml_edit::DocumentMut::new()
-        } else {
-            target_config
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(|e| format!("解析新的 Codex config.toml 失败: {e}"))?
-        };
-
         let existing_config = existing_backup
             .get("config")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if existing_config.trim().is_empty() {
-            target_obj.insert("config".to_string(), json!(target_doc.to_string()));
-            return Ok(());
-        }
-
-        let existing_doc = existing_config
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| format!("解析现有 Codex 备份失败: {e}"))?;
-
-        if let Some(existing_mcp_servers) = existing_doc.get("mcp_servers") {
-            match target_doc.get_mut("mcp_servers") {
-                Some(target_mcp_servers) => {
-                    if let (Some(target_table), Some(existing_table)) = (
-                        target_mcp_servers.as_table_like_mut(),
-                        existing_mcp_servers.as_table_like(),
-                    ) {
-                        for (server_id, server_item) in existing_table.iter() {
-                            if target_table.get(server_id).is_none() {
-                                target_table.insert(server_id, server_item.clone());
-                            }
-                        }
-                    } else {
-                        log::warn!(
-                            "Codex config contains a non-table mcp_servers section; skipping backup MCP merge"
-                        );
-                    }
-                }
-                None => {
-                    target_doc["mcp_servers"] = existing_mcp_servers.clone();
-                }
-            }
-        }
-
-        target_obj.insert("config".to_string(), json!(target_doc.to_string()));
-        Ok(())
-    }
-
-    fn preserve_codex_projects_in_backup(
-        target_settings: &mut Value,
-        existing_backup: &Value,
-    ) -> Result<(), String> {
-        let target_obj = target_settings
-            .as_object_mut()
-            .ok_or_else(|| "Codex 备份必须是 JSON 对象".to_string())?;
-
-        let target_config = target_obj
+        let incoming_config = target_obj
             .get("config")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let mut target_doc = if target_config.trim().is_empty() {
-            toml_edit::DocumentMut::new()
-        } else {
-            target_config
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(|e| format!("解析新的 Codex config.toml 失败: {e}"))?
-        };
 
-        let existing_config = existing_backup
-            .get("config")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if existing_config.trim().is_empty() {
-            target_obj.insert("config".to_string(), json!(target_doc.to_string()));
-            return Ok(());
-        }
-
-        let existing_doc = existing_config
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| format!("解析现有 Codex 备份失败: {e}"))?;
-
-        if let Some(existing_projects) = existing_doc.get("projects") {
-            match target_doc.get_mut("projects") {
-                Some(target_projects) => {
-                    if let (Some(target_table), Some(existing_table)) = (
-                        target_projects.as_table_like_mut(),
-                        existing_projects.as_table_like(),
-                    ) {
-                        for (project_key, project_item) in existing_table.iter() {
-                            if target_table.get(project_key).is_none() {
-                                target_table.insert(project_key, project_item.clone());
-                            }
-                        }
-                    } else {
-                        log::warn!(
-                            "Codex config contains a non-table projects section; skipping backup projects merge"
-                        );
-                    }
-                }
-                None => {
-                    target_doc["projects"] = existing_projects.clone();
-                }
-            }
-        }
-
-        target_obj.insert("config".to_string(), json!(target_doc.to_string()));
+        let merged = crate::codex_config::merge_codex_config(existing_config, incoming_config);
+        target_obj.insert("config".to_string(), json!(merged));
         Ok(())
     }
 

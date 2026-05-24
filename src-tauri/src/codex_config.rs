@@ -92,11 +92,6 @@ pub fn write_codex_live_atomic(
     } else {
         None
     };
-    let _old_config = if config_path.exists() {
-        Some(fs::read(&config_path).map_err(|e| AppError::io(&config_path, e))?)
-    } else {
-        None
-    };
 
     // 准备写入内容
     let cfg_text = match config_text_opt {
@@ -107,11 +102,20 @@ pub fn write_codex_live_atomic(
         toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
     }
 
+    // 合并：将 incoming config 覆盖到现有文件上，保留 incoming 中未涉及的节
+    // （如 [projects]、[tui] 等 CC Switch 不管理的配置）
+    let existing_config = fs::read_to_string(&config_path).ok();
+    let final_text = if let Some(existing) = &existing_config {
+        merge_codex_config(existing, &cfg_text)
+    } else {
+        cfg_text.clone()
+    };
+
     // 第一步：写 auth.json
     write_json_file(&auth_path, auth)?;
 
     // 第二步：写 config.toml（失败则回滚 auth.json）
-    if let Err(e) = write_text_file(&config_path, &cfg_text) {
+    if let Err(e) = write_text_file(&config_path, &final_text) {
         // 回滚 auth.json
         if let Some(bytes) = old_auth {
             let _ = atomic_write(&auth_path, &bytes);
@@ -122,6 +126,35 @@ pub fn write_codex_live_atomic(
     }
 
     Ok(())
+}
+
+/// 将 incoming TOML 合并到 existing TOML 上。
+///
+/// incoming 中的键覆盖 existing 中的同名键；existing 中独有的顶级键和子表保留不变。
+/// 解析失败时降级为直接使用 incoming。
+pub fn merge_codex_config(existing: &str, incoming: &str) -> String {
+    let Ok(mut base) = existing.parse::<DocumentMut>() else {
+        return incoming.to_string();
+    };
+    let Ok(patch) = incoming.parse::<DocumentMut>() else {
+        return incoming.to_string();
+    };
+
+    for (key, value) in patch.iter() {
+        match base.get_mut(key) {
+            Some(base_item) if base_item.is_table_like() && value.is_table_like() => {
+                let base_table = base_item.as_table_like_mut().unwrap();
+                for (sub_key, sub_value) in value.as_table_like().unwrap().iter() {
+                    base_table.insert(sub_key, sub_value.clone());
+                }
+            }
+            _ => {
+                base[key] = value.clone();
+            }
+        }
+    }
+
+    base.to_string()
 }
 
 /// 读取 `~/.codex/config.toml`，若不存在返回空字符串
@@ -1009,5 +1042,139 @@ base_url = "https://production.api/v1"
             .and_then(|v| v.get("base_url"))
             .and_then(|v| v.as_str());
         assert_eq!(base_url, Some("https://production.api/v1"));
+    }
+
+    #[test]
+    fn merge_codex_config_preserves_projects_section() {
+        let existing = r#"model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "http://127.0.0.1:15721/v1"
+
+[projects."/home/user/project"]
+trust_level = "trusted"
+
+[tui]
+status_line_use_colors = true
+"#;
+        let incoming = r#"model_provider = "custom"
+model = "new-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#;
+
+        let result = merge_codex_config(existing, incoming);
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        // incoming 覆盖
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some("new-model")
+        );
+        // incoming 新增
+        let wire_api = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("custom"))
+            .and_then(|v| v.get("wire_api"))
+            .and_then(|v| v.as_str());
+        assert_eq!(wire_api, Some("responses"));
+
+        // existing 独有的 projects 保留
+        let trust = parsed
+            .get("projects")
+            .and_then(|v| v.get("/home/user/project"))
+            .and_then(|v| v.get("trust_level"))
+            .and_then(|v| v.as_str());
+        assert_eq!(trust, Some("trusted"));
+
+        // existing 独有的 tui 保留
+        let colors = parsed
+            .get("tui")
+            .and_then(|v| v.get("status_line_use_colors"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(colors, Some(true));
+    }
+
+    #[test]
+    fn merge_codex_config_no_existing_file() {
+        let incoming = r#"model_provider = "custom"
+model = "mimo-v2.5"
+"#;
+        let result = merge_codex_config("", incoming);
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some("mimo-v2.5")
+        );
+    }
+
+    #[test]
+    fn merge_codex_config_incoming_overrides_existing() {
+        let existing = r#"model = "old-model"
+model_provider = "old-provider"
+"#;
+        let incoming = r#"model = "new-model"
+model_provider = "new-provider"
+"#;
+        let result = merge_codex_config(existing, incoming);
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some("new-model")
+        );
+        assert_eq!(
+            parsed.get("model_provider").and_then(|v| v.as_str()),
+            Some("new-provider")
+        );
+    }
+
+    #[test]
+    fn merge_codex_config_merges_projects_sub_keys_when_both_have_projects() {
+        let existing = r#"model_provider = "custom"
+model = "old-model"
+
+[projects."/home/user/old-project"]
+trust_level = "trusted"
+"#;
+        let incoming = r#"model_provider = "custom"
+model = "new-model"
+
+[projects."/home/user/new-project"]
+trust_level = "full"
+"#;
+
+        let result = merge_codex_config(existing, incoming);
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some("new-model"),
+            "incoming should override top-level fields"
+        );
+
+        assert_eq!(
+            parsed
+                .get("projects")
+                .and_then(|v| v.get("/home/user/new-project"))
+                .and_then(|v| v.get("trust_level"))
+                .and_then(|v| v.as_str()),
+            Some("full"),
+            "incoming project should be present"
+        );
+
+        assert_eq!(
+            parsed
+                .get("projects")
+                .and_then(|v| v.get("/home/user/old-project"))
+                .and_then(|v| v.get("trust_level"))
+                .and_then(|v| v.as_str()),
+            Some("trusted"),
+            "existing project should be preserved when incoming doesn't override it"
+        );
     }
 }
