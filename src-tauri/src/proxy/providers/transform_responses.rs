@@ -323,8 +323,24 @@ pub(crate) fn build_anthropic_usage_from_responses(usage: Option<&Value>) -> Val
         log::debug!("[Responses] Partial usage object: {:?}", u);
     }
 
+    // OpenAI's input_tokens includes cache reads; Anthropic's input_tokens does not.
+    // When cache data comes from the OpenAI nested format (input_tokens_details.cached_tokens),
+    // subtract it so downstream stats see fresh input_tokens semantics.
+    // When it comes from a direct cache_read_input_tokens field, the provider already
+    // follows Anthropic semantics — no subtraction needed.
+    let openai_nested_cache = u
+        .pointer("/input_tokens_details/cached_tokens")
+        .and_then(|v| v.as_u64());
+    let direct_cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_u64());
+
+    let adjusted_input = if direct_cache_read.is_some() {
+        input
+    } else {
+        input.saturating_sub(openai_nested_cache.unwrap_or(0))
+    };
+
     let mut result = json!({
-        "input_tokens": input,
+        "input_tokens": adjusted_input,
         "output_tokens": output
     });
 
@@ -1501,7 +1517,9 @@ mod tests {
         });
 
         let result = responses_to_anthropic(input).unwrap();
-        assert_eq!(result["usage"]["input_tokens"], 100);
+        // OpenAI Responses nested format: input_tokens (100) includes cached_tokens (80).
+        // input_tokens should be fresh: 100 - 80 = 20.
+        assert_eq!(result["usage"]["input_tokens"], 20);
         assert_eq!(result["usage"]["output_tokens"], 50);
         assert_eq!(result["usage"]["cache_read_input_tokens"], 80);
     }
@@ -1987,7 +2005,9 @@ mod tests {
                 "cached_tokens": 80
             }
         })));
-        assert_eq!(result["input_tokens"], json!(100));
+        // Nested format: input_tokens (100) includes cached_tokens (80).
+        // After fix: 100 - 80 = 20.
+        assert_eq!(result["input_tokens"], json!(20));
         assert_eq!(result["output_tokens"], json!(50));
         assert_eq!(result["cache_read_input_tokens"], json!(80));
     }
@@ -2002,7 +2022,40 @@ mod tests {
             },
             "cache_read_input_tokens": 100
         })));
+        // Direct cache_read_input_tokens → provider follows Anthropic semantics,
+        // input_tokens is already fresh — no subtraction.
+        assert_eq!(result["input_tokens"], json!(100));
         assert_eq!(result["cache_read_input_tokens"], json!(100)); // Direct field overrides nested
+    }
+
+    #[test]
+    fn test_build_usage_cache_tokens_nested_subtracts_from_input() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "input_tokens_details": {
+                "cached_tokens": 400
+            }
+        })));
+        // Nested format: input_tokens (1000) includes cached_tokens (400).
+        // After subtraction: 1000 - 400 = 600.
+        assert_eq!(result["input_tokens"], json!(600));
+        assert_eq!(result["output_tokens"], json!(500));
+        assert_eq!(result["cache_read_input_tokens"], json!(400));
+    }
+
+    #[test]
+    fn test_build_usage_cache_tokens_nested_saturating_sub() {
+        let result = build_anthropic_usage_from_responses(Some(&json!({
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "input_tokens_details": {
+                "cached_tokens": 200
+            }
+        })));
+        // saturating_sub ensures no underflow: 100 - 200 = 0
+        assert_eq!(result["input_tokens"], json!(0));
+        assert_eq!(result["cache_read_input_tokens"], json!(200));
     }
 
     #[test]
