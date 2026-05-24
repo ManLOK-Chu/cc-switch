@@ -159,8 +159,12 @@ impl ProxyService {
                 for key in token_keys {
                     env.remove(key);
                 }
+                // 使用 ANTHROPIC_AUTH_TOKEN 而非 ANTHROPIC_API_KEY：
+                // Claude Code 通过检测 ANTHROPIC_AUTH_TOKEN 判断登录状态；
+                // 使用 ANTHROPIC_API_KEY 会导致 Claude Code 认为用户未登录。
+                // 代理转发时使用数据库中 Provider 的真实 token，不依赖此占位符。
                 env.insert(
-                    "ANTHROPIC_API_KEY".to_string(),
+                    "ANTHROPIC_AUTH_TOKEN".to_string(),
                     json!(PROXY_TOKEN_PLACEHOLDER),
                 );
             }
@@ -2204,7 +2208,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_account_claude_takeover_uses_api_key_placeholder() {
+    fn managed_account_claude_takeover_uses_auth_token_placeholder() {
         let mut provider = Provider::with_id(
             "copilot".to_string(),
             "GitHub Copilot".to_string(),
@@ -2233,13 +2237,14 @@ mod tests {
             .and_then(|value| value.as_object())
             .expect("env should exist");
         assert_eq!(
-            env.get("ANTHROPIC_API_KEY")
+            env.get("ANTHROPIC_AUTH_TOKEN")
                 .and_then(|value| value.as_str()),
-            Some(PROXY_TOKEN_PLACEHOLDER)
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "managed OAuth providers should use ANTHROPIC_AUTH_TOKEN so Claude Code detects login"
         );
         assert!(
-            env.get("ANTHROPIC_AUTH_TOKEN").is_none(),
-            "managed OAuth providers should avoid Claude Auth Token login semantics"
+            env.get("ANTHROPIC_API_KEY").is_none(),
+            "managed OAuth providers should not use ANTHROPIC_API_KEY"
         );
     }
 
