@@ -59,3 +59,15 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git tag "${{ steps.check.outputs.tag }}"
           git push origin "${{ steps.check.outputs.tag }}"
+
+      - name: Trigger Release workflow
+        if: steps.check.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/dispatches \
+            --method POST \
+            --field event_type=nightly-release \
+            --field client_payload[tag]="${{ steps.check.outputs.tag }}" \
+            --field client_payload[sha]="${{ github.sha }}"
+          echo "✅ Dispatched nightly-release for tag ${{ steps.check.outputs.tag }}"
