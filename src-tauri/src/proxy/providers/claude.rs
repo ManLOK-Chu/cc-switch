@@ -88,6 +88,7 @@ fn is_reasoning_content_compatible_identifier(value: &str) -> bool {
         || value.contains("kimi")
         || value.contains("deepseek")
         || value.contains("mimo")
+        || value.contains("xiaomimimo")
 }
 
 fn should_preserve_reasoning_content_for_openai_chat(

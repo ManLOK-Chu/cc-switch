@@ -51,6 +51,14 @@ impl TrayTexts {
                 quit: "終了",
                 _auto_label: "自動 (フェイルオーバー)",
             },
+            "zh-TW" => Self {
+                show_main: "開啟主介面",
+                open_website: "開啟官方網站",
+                no_providers_label: "(無供應商)",
+                lightweight_mode: "輕量模式",
+                quit: "退出",
+                _auto_label: "自動 (故障轉移)",
+            },
             _ => Self {
                 show_main: "打开主界面",
                 #[cfg(feature = "tray-official-website")]
