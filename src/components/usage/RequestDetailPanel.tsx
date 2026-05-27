@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dialog";
 import { useRequestDetail } from "@/lib/query/usage";
 import { getFreshInputTokens, isUnpricedUsage } from "@/types/usage";
+import { fmtUsd, getLocaleFromLanguage, parseFiniteNumber } from "./format";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -19,14 +20,7 @@ export function RequestDetailPanel({
 }: RequestDetailPanelProps) {
   const { t, i18n } = useTranslation();
   const { data: request, isLoading } = useRequestDetail(requestId);
-  const dateLocale =
-    i18n.language === "zh"
-      ? "zh-CN"
-      : i18n.language === "zh-TW"
-        ? "zh-TW"
-        : i18n.language === "ja"
-          ? "ja-JP"
-          : "en-US";
+  const dateLocale = getLocaleFromLanguage(i18n.language);
 
   if (isLoading) {
     return (
@@ -55,6 +49,8 @@ export function RequestDetailPanel({
 
   const freshInput = getFreshInputTokens(request);
   const isCacheInclusive = request.inputTokens !== freshInput;
+  const multiplier = parseFiniteNumber(request.costMultiplier);
+  const hasMultiplier = multiplier !== null && multiplier !== 1;
   const unpriced = isUnpricedUsage(request);
 
   return (
@@ -199,9 +195,7 @@ export function RequestDetailPanel({
                     ({t("usage.baseCost", "基础")})
                   </span>
                 </dt>
-                <dd className="font-mono">
-                  ${parseFloat(request.inputCostUsd).toFixed(6)}
-                </dd>
+                <dd className="font-mono">{fmtUsd(request.inputCostUsd, 6)}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">
@@ -211,7 +205,7 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.outputCostUsd).toFixed(6)}
+                  {fmtUsd(request.outputCostUsd, 6)}
                 </dd>
               </div>
               <div>
@@ -222,7 +216,7 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.cacheReadCostUsd).toFixed(6)}
+                  {fmtUsd(request.cacheReadCostUsd, 6)}
                 </dd>
               </div>
               <div>
@@ -233,30 +227,27 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.cacheCreationCostUsd).toFixed(6)}
+                  {fmtUsd(request.cacheCreationCostUsd, 6)}
                 </dd>
               </div>
-              {/* 显示成本倍率（如果不等于1） */}
-              {request.costMultiplier &&
-                parseFloat(request.costMultiplier) !== 1 && (
-                  <div className="col-span-2 border-t pt-3">
-                    <dt className="text-muted-foreground">
-                      {t("usage.costMultiplier", "成本倍率")}
-                    </dt>
-                    <dd className="font-mono">×{request.costMultiplier}</dd>
-                  </div>
-                )}
+              {hasMultiplier && (
+                <div className="col-span-2 border-t pt-3">
+                  <dt className="text-muted-foreground">
+                    {t("usage.costMultiplier", "成本倍率")}
+                  </dt>
+                  <dd className="font-mono">×{request.costMultiplier}</dd>
+                </div>
+              )}
               <div
-                className={`col-span-2 ${request.costMultiplier && parseFloat(request.costMultiplier) !== 1 ? "" : "border-t"} pt-3`}
+                className={`col-span-2 ${hasMultiplier ? "" : "border-t"} pt-3`}
               >
                 <dt className="text-muted-foreground">
                   {t("usage.totalCost", "总成本")}
-                  {request.costMultiplier &&
-                    parseFloat(request.costMultiplier) !== 1 && (
-                      <span className="ml-1 text-xs">
-                        ({t("usage.withMultiplier", "含倍率")})
-                      </span>
-                    )}
+                  {hasMultiplier && (
+                    <span className="ml-1 text-xs">
+                      ({t("usage.withMultiplier", "含倍率")})
+                    </span>
+                  )}
                 </dt>
                 <dd
                   className={`text-lg font-semibold ${
@@ -265,7 +256,7 @@ export function RequestDetailPanel({
                 >
                   {unpriced
                     ? t("usage.unpriced", "未定价")
-                    : `$${parseFloat(request.totalCostUsd).toFixed(6)}`}
+                    : fmtUsd(request.totalCostUsd, 6)}
                 </dd>
               </div>
             </dl>
