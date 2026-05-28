@@ -559,6 +559,14 @@ base_url = "http://localhost:8080"
 
         // Claude Desktop keeps backup state from takeover startup; this sentinel only
         // marks takeover as active so provider updates rewrite the 3P profile.
+        let test_proxy_port = 15722;
+        db.update_proxy_config(ProxyConfig {
+            live_takeover_active: true,
+            listen_port: test_proxy_port,
+            ..Default::default()
+        })
+        .await
+        .expect("update proxy config");
         db.save_live_backup("claude-desktop", "{}")
             .await
             .expect("seed live backup");
@@ -621,7 +629,7 @@ base_url = "http://localhost:8080"
         let profile: Value = read_json_file(&profile_path).expect("read desktop profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop"),
+            json!("http://127.0.0.1:15722/claude-desktop"),
             "desktop profile should stay pointed at the local gateway during takeover"
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
