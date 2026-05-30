@@ -124,7 +124,12 @@ export function PricingEditModal({
         </Button>
       }
     >
-      <form id="pricing-form" onSubmit={handleSubmit} className="space-y-6">
+      <form
+        id="pricing-form"
+        onSubmit={handleSubmit}
+        className="space-y-6"
+        noValidate
+      >
         {editableModelId && (
           <div className="space-y-2">
             <Label htmlFor="modelId">{t("usage.modelId", "模型 ID")}</Label>
