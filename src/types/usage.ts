@@ -104,6 +104,8 @@ export interface ProviderStats {
   totalCacheReadTokens: number;
   totalCacheCreationTokens: number;
   cacheHitRate: number;
+  freshInput: number;
+  outputTokens: number;
 }
 
 export interface ModelStats {
@@ -115,6 +117,8 @@ export interface ModelStats {
   totalCacheReadTokens: number;
   totalCacheCreationTokens: number;
   cacheHitRate: number;
+  freshInput: number;
+  outputTokens: number;
 }
 
 export interface LogFilters {

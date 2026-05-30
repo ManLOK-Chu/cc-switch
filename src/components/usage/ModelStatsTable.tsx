@@ -41,7 +41,10 @@ export function ModelStatsTable({
               {t("usage.requests", "请求数")}
             </TableHead>
             <TableHead className="text-right">
-              {t("usage.tokens", "Tokens")}
+              {t("usage.inputTokens", "输入Tokens")}
+            </TableHead>
+            <TableHead className="text-right">
+              {t("usage.outputTokens", "输出Tokens")}
             </TableHead>
             <TableHead className="text-right">
               {t("usage.cacheReadTokens", "缓存命中")}
@@ -61,7 +64,7 @@ export function ModelStatsTable({
           {stats?.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={7}
+                colSpan={8}
                 className="text-center text-muted-foreground"
               >
                 {t("usage.noData", "暂无数据")}
@@ -77,7 +80,10 @@ export function ModelStatsTable({
                   {stat.requestCount.toLocaleString()}
                 </TableCell>
                 <TableCell className="text-right">
-                  {stat.totalTokens.toLocaleString()}
+                  {stat.freshInput.toLocaleString()}
+                </TableCell>
+                <TableCell className="text-right">
+                  {stat.outputTokens.toLocaleString()}
                 </TableCell>
                 <TableCell className="text-right">
                   {stat.totalCacheReadTokens.toLocaleString()}
