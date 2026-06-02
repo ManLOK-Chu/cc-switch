@@ -184,6 +184,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const { t } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
   const [isLoadingVersion, setIsLoadingVersion] = useState(true);
+  const [buildTag, setBuildTag] = useState<string | null>(null);
+  const [isLoadingBuildTag, setIsLoadingBuildTag] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(true);
@@ -334,22 +336,26 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     let active = true;
     const load = async () => {
       try {
-        const [appVersion] = await Promise.all([
+        const [appVersion, fetchedBuildTag] = await Promise.all([
           getVersion(),
+          settingsApi.getBuildTag(),
           loadAllToolVersions(),
         ]);
 
         if (active) {
           setVersion(appVersion);
+          setBuildTag(fetchedBuildTag);
         }
       } catch (error) {
         console.error("[AboutSection] Failed to load info", error);
         if (active) {
           setVersion(null);
+          setBuildTag(null);
         }
       } finally {
         if (active) {
           setIsLoadingVersion(false);
+          setIsLoadingBuildTag(false);
         }
       }
     };
@@ -738,6 +744,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const displayVersion = version ?? t("common.unknown");
 
+  const upstreamNormalized = version?.replace(/^v/, "") ?? "";
+  const buildTagNormalized = buildTag?.replace(/^v/, "") ?? "";
+  const shouldShowBuildTag =
+    !isLoadingBuildTag &&
+    buildTag !== null &&
+    buildTag !== "" &&
+    buildTag !== "dev" &&
+    upstreamNormalized !== buildTagNormalized;
+
   // 任一安装/升级进行中（批量或单工具）即视为忙碌：用于禁用所有操作按钮，
   // 避免并发触发多个 npm/pip 全局写入造成冲突。
   // preflightTools 覆盖升级前的 probe 阶段——那段在 executeRun 之前、toolActions
@@ -786,6 +801,14 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                   <span className="font-medium">{`v${displayVersion}`}</span>
                 )}
               </Badge>
+              {shouldShowBuildTag && (
+                <Badge variant="secondary" className="gap-1.5">
+                  <span className="text-muted-foreground">
+                    {t("settings.buildTag")}
+                  </span>
+                  <span className="font-medium">{buildTag}</span>
+                </Badge>
+              )}
               {isPortable && (
                 <Badge variant="secondary" className="gap-1.5">
                   <Info className="h-3 w-3" />

@@ -75,6 +75,12 @@ pub async fn is_portable_mode() -> Result<bool, String> {
     }
 }
 
+/// 返回本仓库的 git tag（编译期烘焙）
+#[tauri::command]
+pub fn get_build_tag() -> String {
+    crate::BUILD_TAG.to_string()
+}
+
 /// 获取应用启动阶段的初始化错误（若有）。
 /// 用于前端在早期主动拉取，避免事件订阅竞态导致的提示缺失。
 #[tauri::command]

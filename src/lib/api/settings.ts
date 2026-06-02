@@ -35,6 +35,10 @@ export const settingsApi = {
     await invoke("check_for_updates");
   },
 
+  async getBuildTag(): Promise<string> {
+    return await invoke<string>("get_build_tag");
+  },
+
   async isPortable(): Promise<boolean> {
     return await invoke("is_portable_mode");
   },

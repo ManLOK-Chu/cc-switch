@@ -51,6 +51,20 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Verify origin is the fork (not farion1231 upstream)
+        if: steps.check.outputs.create == 'true'
+        shell: bash
+        run: |
+          ORIGIN_URL=$(git remote get-url origin)
+          if echo "$ORIGIN_URL" | grep -qi "farion1231"; then
+            echo "::error::Refusing to push nightly tag: origin points to farion1231 upstream"
+            echo "::error::  ORIGIN_URL=$ORIGIN_URL"
+            echo "::error::  nightly-* tags are fork-specific and would pollute the upstream repo's tag list."
+            echo "::error::  Fix: git remote set-url origin https://github.com/ManLOK-Chu/cc-switch.git"
+            exit 1
+          fi
+          echo "✅ origin is the fork: $ORIGIN_URL"
+
       - name: Create and push tag
         if: steps.check.outputs.create == 'true'
         shell: bash

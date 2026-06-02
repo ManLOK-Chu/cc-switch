@@ -25,4 +25,67 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=/MANIFEST:NO");
         println!("cargo:rerun-if-changed={}", manifest_path.display());
     }
+
+    let tag = compute_build_tag();
+    println!("cargo:rustc-env=BUILD_TAG={}", tag);
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs");
+    println!("cargo:rerun-if-changed=.git/index");
+    println!("cargo:rerun-if-env-changed=CC_SWITCH_TAG");
+}
+
+// ---------------------------------------------------------------------------
+// compute_build_tag() — determine the build tag from env or git describe
+// ---------------------------------------------------------------------------
+fn compute_build_tag() -> String {
+    // 1) CC_SWITCH_TAG env — ignore empty string
+    if let Ok(v) = std::env::var("CC_SWITCH_TAG") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return normalize(&v);
+        }
+    }
+    // 2) git describe --tags --dirty --long
+    match std::process::Command::new("git")
+        .args(["describe", "--tags", "--dirty", "--long"])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            normalize(&s)
+        }
+        _ => "dev".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// normalize() — shared between build.rs (build-time) and lib.rs (test-time)
+// via `include!()`.  Keep the canonical copy here.
+// ---------------------------------------------------------------------------
+fn normalize(raw: &str) -> String {
+    let (core, is_dirty) = match raw.strip_suffix("-dirty") {
+        Some(c) => (c, true),
+        None => (raw, false),
+    };
+    let (base, behind) = match core.split_once("-g") {
+        Some((b, _hash)) => {
+            if let Some((tag, n)) = b.rsplit_once('-') {
+                if n.chars().all(|c| c.is_ascii_digit()) {
+                    (tag, Some(n))
+                } else {
+                    (b, None)
+                }
+            } else {
+                (b, None)
+            }
+        }
+        None => (core, None),
+    };
+    let stripped = base.strip_prefix('v').unwrap_or(base);
+    match (behind, is_dirty) {
+        (Some(n), true) => format!("v{}-{}-dirty", stripped, n),
+        (Some(n), false) => format!("v{}-{}", stripped, n),
+        (None, true) => format!("v{}-dirty", stripped),
+        (None, false) => format!("v{}", stripped),
+    }
 }

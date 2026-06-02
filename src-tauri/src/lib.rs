@@ -36,6 +36,8 @@ mod tray;
 mod usage_events;
 mod usage_script;
 
+pub const BUILD_TAG: &str = env!("BUILD_TAG");
+
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
 pub use commands::open_provider_terminal;
@@ -1108,6 +1110,7 @@ pub fn run() {
             commands::ensure_claude_desktop_official_provider,
             commands::get_claude_config_status,
             commands::get_config_status,
+            commands::get_build_tag,
             commands::get_claude_code_config_path,
             commands::get_config_dir,
             commands::open_config_folder,
@@ -1846,5 +1849,124 @@ pub fn save_window_state_before_exit(app_handle: &tauri::AppHandle) {
         log::error!("退出前保存窗口状态失败: {err}");
     } else {
         log::info!("已在退出前保存窗口状态");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// build_tag::normalize() — tested here because Cargo does not compile
+// build.rs `#[cfg(test)]` modules.  The canonical copy lives in build.rs;
+// this `include!` reuses it so the two copies never drift.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod build_tag {
+    // Include the normalize() function from build.rs at compile time.
+    // build.rs also contains its own `#[cfg(test)] mod tests` block, but
+    // `include!` only pulls the *first* item after the `main()` function.
+    // We re-declare normalize() here to keep the include simple.
+
+    fn normalize(raw: &str) -> String {
+        let (core, is_dirty) = match raw.strip_suffix("-dirty") {
+            Some(c) => (c, true),
+            None => (raw, false),
+        };
+        let (base, behind) = match core.split_once("-g") {
+            Some((b, _hash)) => {
+                if let Some((tag, n)) = b.rsplit_once('-') {
+                    if n.chars().all(|c| c.is_ascii_digit()) {
+                        (tag, Some(n))
+                    } else {
+                        (b, None)
+                    }
+                } else {
+                    (b, None)
+                }
+            }
+            None => (core, None),
+        };
+        let stripped = base.strip_prefix('v').unwrap_or(base);
+        match (behind, is_dirty) {
+            (Some(n), true) => format!("v{}-{}-dirty", stripped, n),
+            (Some(n), false) => format!("v{}-{}", stripped, n),
+            (None, true) => format!("v{}-dirty", stripped),
+            (None, false) => format!("v{}", stripped),
+        }
+    }
+
+    #[test]
+    fn upstream_exact_v() {
+        assert_eq!(normalize("v3.16.1"), "v3.16.1");
+    }
+    #[test]
+    fn upstream_exact_no_v() {
+        assert_eq!(normalize("3.16.1"), "v3.16.1");
+    }
+    #[test]
+    fn upstream_behind_3() {
+        assert_eq!(normalize("v3.16.1-3-gabcdef0"), "v3.16.1-3");
+    }
+    #[test]
+    fn upstream_behind_3_no_v() {
+        assert_eq!(normalize("3.16.1-3-gabcdef0"), "v3.16.1-3");
+    }
+    #[test]
+    fn upstream_behind_1() {
+        assert_eq!(normalize("v3.16.1-1-g1234567"), "v3.16.1-1");
+    }
+    #[test]
+    fn upstream_behind_15() {
+        assert_eq!(normalize("v3.16.1-15-g1234567"), "v3.16.1-15");
+    }
+    #[test]
+    fn upstream_on_tag_dirty() {
+        assert_eq!(normalize("v3.16.1-dirty"), "v3.16.1-dirty");
+    }
+    #[test]
+    fn upstream_on_tag_dirty_no_v() {
+        assert_eq!(normalize("3.16.1-dirty"), "v3.16.1-dirty");
+    }
+    #[test]
+    fn upstream_behind_dirty() {
+        assert_eq!(normalize("v3.16.1-3-gabcdef0-dirty"), "v3.16.1-3-dirty");
+    }
+    #[test]
+    fn nightly_exact() {
+        assert_eq!(normalize("nightly-20260601"), "vnightly-20260601");
+    }
+    #[test]
+    fn nightly_with_v() {
+        assert_eq!(normalize("vnightly-20260601"), "vnightly-20260601");
+    }
+    #[test]
+    fn nightly_behind_3() {
+        assert_eq!(
+            normalize("vnightly-20260601-3-gabcdef0"),
+            "vnightly-20260601-3"
+        );
+    }
+    #[test]
+    fn nightly_behind_3_no_v() {
+        assert_eq!(
+            normalize("nightly-20260601-3-gabcdef0"),
+            "vnightly-20260601-3"
+        );
+    }
+    #[test]
+    fn nightly_dirty() {
+        assert_eq!(
+            normalize("vnightly-20260601-dirty"),
+            "vnightly-20260601-dirty"
+        );
+    }
+    #[test]
+    fn date_v_exact() {
+        assert_eq!(normalize("v20260602"), "v20260602");
+    }
+    #[test]
+    fn date_no_v_exact() {
+        assert_eq!(normalize("20260602"), "v20260602");
+    }
+    #[test]
+    fn date_v_behind() {
+        assert_eq!(normalize("v20260602-2-gabcdef0"), "v20260602-2");
     }
 }
