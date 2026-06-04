@@ -867,6 +867,10 @@ pub fn run() {
                 app_state.db.clone(),
                 app.handle().clone(),
             );
+            crate::services::s3_auto_sync::start_worker(
+                app_state.db.clone(),
+                app.handle().clone(),
+            );
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
@@ -1023,6 +1027,10 @@ pub fn run() {
                         "Gemini usage initial sync",
                         crate::services::session_usage_gemini::sync_gemini_usage(db),
                     );
+                    run_step(
+                        "OpenCode usage initial sync",
+                        crate::services::session_usage_opencode::sync_opencode_usage(db),
+                    );
 
                     // 定期同步
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -1042,6 +1050,10 @@ pub fn run() {
                         run_step(
                             "Gemini usage periodic sync",
                             crate::services::session_usage_gemini::sync_gemini_usage(db),
+                        );
+                        run_step(
+                            "OpenCode usage periodic sync",
+                            crate::services::session_usage_opencode::sync_opencode_usage(db),
                         );
                     }
                 });
@@ -1201,6 +1213,11 @@ pub fn run() {
             commands::webdav_sync_download,
             commands::webdav_sync_save_settings,
             commands::webdav_sync_fetch_remote_info,
+            commands::s3_test_connection,
+            commands::s3_sync_upload,
+            commands::s3_sync_download,
+            commands::s3_sync_save_settings,
+            commands::s3_sync_fetch_remote_info,
             commands::save_file_dialog,
             commands::open_file_dialog,
             commands::open_zip_file_dialog,
