@@ -81,11 +81,14 @@ fn normalize(raw: &str) -> String {
         }
         None => (core, None),
     };
+    let had_v = base.starts_with('v');
     let stripped = base.strip_prefix('v').unwrap_or(base);
+    let behind = behind.filter(|n| *n != "0");
+    let prefix = if had_v { "v" } else { "" };
     match (behind, is_dirty) {
-        (Some(n), true) => format!("v{}-{}-dirty", stripped, n),
-        (Some(n), false) => format!("v{}-{}", stripped, n),
-        (None, true) => format!("v{}-dirty", stripped),
-        (None, false) => format!("v{}", stripped),
+        (Some(n), true) => format!("{}{}-{}-dirty", prefix, stripped, n),
+        (Some(n), false) => format!("{}{}-{}", prefix, stripped, n),
+        (None, true) => format!("{}{}-dirty", prefix, stripped),
+        (None, false) => format!("{}{}", prefix, stripped),
     }
 }

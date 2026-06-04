@@ -1900,12 +1900,15 @@ mod build_tag {
             }
             None => (core, None),
         };
+        let had_v = base.starts_with('v');
         let stripped = base.strip_prefix('v').unwrap_or(base);
+        let behind = behind.filter(|n| *n != "0");
+        let prefix = if had_v { "v" } else { "" };
         match (behind, is_dirty) {
-            (Some(n), true) => format!("v{}-{}-dirty", stripped, n),
-            (Some(n), false) => format!("v{}-{}", stripped, n),
-            (None, true) => format!("v{}-dirty", stripped),
-            (None, false) => format!("v{}", stripped),
+            (Some(n), true) => format!("{}{}-{}-dirty", prefix, stripped, n),
+            (Some(n), false) => format!("{}{}-{}", prefix, stripped, n),
+            (None, true) => format!("{}{}-dirty", prefix, stripped),
+            (None, false) => format!("{}{}", prefix, stripped),
         }
     }
 
@@ -1915,7 +1918,7 @@ mod build_tag {
     }
     #[test]
     fn upstream_exact_no_v() {
-        assert_eq!(normalize("3.16.1"), "v3.16.1");
+        assert_eq!(normalize("3.16.1"), "3.16.1");
     }
     #[test]
     fn upstream_behind_3() {
@@ -1923,7 +1926,7 @@ mod build_tag {
     }
     #[test]
     fn upstream_behind_3_no_v() {
-        assert_eq!(normalize("3.16.1-3-gabcdef0"), "v3.16.1-3");
+        assert_eq!(normalize("3.16.1-3-gabcdef0"), "3.16.1-3");
     }
     #[test]
     fn upstream_behind_1() {
@@ -1939,7 +1942,7 @@ mod build_tag {
     }
     #[test]
     fn upstream_on_tag_dirty_no_v() {
-        assert_eq!(normalize("3.16.1-dirty"), "v3.16.1-dirty");
+        assert_eq!(normalize("3.16.1-dirty"), "3.16.1-dirty");
     }
     #[test]
     fn upstream_behind_dirty() {
@@ -1947,7 +1950,7 @@ mod build_tag {
     }
     #[test]
     fn nightly_exact() {
-        assert_eq!(normalize("nightly-20260601"), "vnightly-20260601");
+        assert_eq!(normalize("nightly-20260601"), "nightly-20260601");
     }
     #[test]
     fn nightly_with_v() {
@@ -1964,7 +1967,7 @@ mod build_tag {
     fn nightly_behind_3_no_v() {
         assert_eq!(
             normalize("nightly-20260601-3-gabcdef0"),
-            "vnightly-20260601-3"
+            "nightly-20260601-3"
         );
     }
     #[test]
@@ -1980,10 +1983,26 @@ mod build_tag {
     }
     #[test]
     fn date_no_v_exact() {
-        assert_eq!(normalize("20260602"), "v20260602");
+        assert_eq!(normalize("20260602"), "20260602");
     }
     #[test]
     fn date_v_behind() {
         assert_eq!(normalize("v20260602-2-gabcdef0"), "v20260602-2");
+    }
+    #[test]
+    fn commit_count_zero_exact_v() {
+        // git describe --long on exact tag: commit count 0 → stripped
+        assert_eq!(normalize("v3.16.1-0-gabcdef0"), "v3.16.1");
+    }
+    #[test]
+    fn commit_count_zero_nightly() {
+        assert_eq!(normalize("nightly-20260601-0-gabcdef0"), "nightly-20260601");
+    }
+    #[test]
+    fn commit_count_zero_v_nightly() {
+        assert_eq!(
+            normalize("vnightly-20260601-0-gabcdef0"),
+            "vnightly-20260601"
+        );
     }
 }
