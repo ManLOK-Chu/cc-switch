@@ -26,7 +26,16 @@ jobs:
         id: check
         shell: bash
         run: |
-          TAG="nightly-$(date -u +%Y%m%d)"
+          # 使用北京时间 (UTC+8) 计算日期，确保 tag 与用户感知的日期一致
+          TAG="nightly-$(TZ='Asia/Shanghai' date +%Y%m%d)"
+
+          # 检查目标 tag 是否已存在
+          if git tag --list "$TAG" | grep -q .; then
+            echo "Tag $TAG already exists, skipping"
+            echo "create=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # 查找最新的 nightly tag
           LAST_NIGHTLY=$(git tag --list 'nightly-*' --sort=-creatordate | head -1)
