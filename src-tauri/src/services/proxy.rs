@@ -3150,6 +3150,13 @@ wire_api = "responses"
         .expect("enable Codex official auth preservation");
 
         let db = Arc::new(Database::memory().expect("init db"));
+        // 使用与默认代理端口不同的端口，避免与正在运行的 CC Switch 实例冲突
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15722,
+            ..Default::default()
+        })
+        .await
+        .expect("set test proxy port");
         let service = ProxyService::new(db.clone());
         let oauth_auth = json!({
             "auth_mode": "chatgpt",
@@ -3229,6 +3236,13 @@ wire_api = "responses"
         .expect("enable Codex official auth preservation");
 
         let db = Arc::new(Database::memory().expect("init db"));
+        // 使用与默认代理端口不同的端口，避免与正在运行的 CC Switch 实例冲突
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15722,
+            ..Default::default()
+        })
+        .await
+        .expect("set test proxy port");
         let state = crate::store::AppState::new(db.clone());
         let oauth_auth = json!({
             "auth_mode": "chatgpt",
@@ -3449,6 +3463,13 @@ wire_api = "responses"
         .expect("enable Codex official auth preservation");
 
         let db = Arc::new(Database::memory().expect("init db"));
+        // 使用与默认代理端口不同的端口，避免与正在运行的 CC Switch 实例冲突
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15722,
+            ..Default::default()
+        })
+        .await
+        .expect("set test proxy port");
         let service = ProxyService::new(db.clone());
         let oauth_auth = json!({
             "auth_mode": "chatgpt",
@@ -3538,7 +3559,7 @@ wire_api = "responses"
         let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read live config");
         assert!(
-            live_config.contains("http://127.0.0.1:15721/v1"),
+            live_config.contains("http://127.0.0.1:15722/v1"),
             "stale enabled takeover must be rebuilt to the current proxy base_url"
         );
         assert!(
@@ -5156,8 +5177,10 @@ command = "shared-command"
         )
         .expect("set common config snippet");
 
-        let mut proxy_config = ProxyConfig::default();
-        proxy_config.listen_port = 0;
+        let proxy_config = ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        };
         db.update_proxy_config(proxy_config)
             .await
             .expect("set test proxy config");
@@ -5294,8 +5317,10 @@ requires_openai_auth = true
         let db = Arc::new(Database::memory().expect("init db"));
         let state = crate::store::AppState::new(db.clone());
 
-        let mut proxy_config = ProxyConfig::default();
-        proxy_config.listen_port = 0;
+        let proxy_config = ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        };
         db.update_proxy_config(proxy_config)
             .await
             .expect("set test proxy config");

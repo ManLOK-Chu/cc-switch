@@ -2,7 +2,7 @@ use serde_json::json;
 
 use cc_switch_lib::{
     get_claude_settings_path, read_json_file, write_codex_live_atomic, AppError, AppType, McpApps,
-    McpServer, MultiAppConfig, Provider, ProviderMeta, ProviderService,
+    McpServer, MultiAppConfig, Provider, ProviderMeta, ProviderService, ProxyConfig,
 };
 
 #[path = "support.rs"]
@@ -596,6 +596,12 @@ wire_api = "responses"
     }
 
     let state = create_test_state_with_config(&initial_config).expect("create test state");
+    // 使用与默认代理端口不同的端口，避免与正在运行的 CC Switch 实例冲突
+    futures::executor::block_on(state.db.update_proxy_config(ProxyConfig {
+        listen_port: 15722,
+        ..Default::default()
+    }))
+    .expect("set test proxy port");
 
     ProviderService::switch(&state, AppType::Codex, "deepseek-provider")
         .expect("switch from official subscription to DeepSeek");
@@ -634,7 +640,7 @@ wire_api = "responses"
     let config_after_takeover =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config");
     assert!(
-        config_after_takeover.contains("http://127.0.0.1:15721/v1"),
+        config_after_takeover.contains("http://127.0.0.1:15722/v1"),
         "enabling takeover should point Codex config.toml at the local proxy"
     );
     assert!(

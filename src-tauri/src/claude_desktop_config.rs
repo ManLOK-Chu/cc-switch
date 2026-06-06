@@ -810,7 +810,7 @@ pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<V
         .iter()
         .find(|r| r.route_id == requested)
         .or_else(|| {
-            let normalized = strip_date_version_suffix(&requested)?;
+            let normalized = strip_date_version_suffix(requested)?;
             routes.iter().find(|r| r.route_id == normalized)
         })
         .or_else(|| {
