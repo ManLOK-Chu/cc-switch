@@ -189,15 +189,17 @@ impl ProxyService {
                 for key in token_keys {
                     env.remove(key);
                 }
-                env.insert(
-                    "ANTHROPIC_API_KEY".to_string(),
-                    json!(PROXY_TOKEN_PLACEHOLDER),
-                );
                 if keep_auth_token {
-                    // 无条件注入而非"已存在才保留"：热切换路径传入的是 provider
-                    // settings（预设不含该键），且旧版接管已把存量用户 live 中的键删光。
+                    // Codex 系：仅注入 AUTH_TOKEN 占位符，抑制 Claude Code 登录提示（#3784）。
+                    // 不再同时注入 API_KEY，避免 Claude Code 检测到双 key 冲突发出警告。
                     env.insert(
                         "ANTHROPIC_AUTH_TOKEN".to_string(),
+                        json!(PROXY_TOKEN_PLACEHOLDER),
+                    );
+                } else {
+                    // Copilot：仅注入 API_KEY 占位，避免与 /login 管理的 key 冲突（#1049）。
+                    env.insert(
+                        "ANTHROPIC_API_KEY".to_string(),
                         json!(PROXY_TOKEN_PLACEHOLDER),
                     );
                 }
@@ -2957,7 +2959,7 @@ mod tests {
         assert_env_str(env, "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", Some("gpt-5.4"));
         assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", Some("claude-opus-4-8"));
         assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME", Some("gpt-5.4"));
-        assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
         assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
     }
 
@@ -2990,7 +2992,7 @@ mod tests {
             .get("env")
             .and_then(|value| value.as_object())
             .expect("env should exist");
-        assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
         assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
     }
 
@@ -3022,7 +3024,7 @@ mod tests {
             .get("env")
             .and_then(|value| value.as_object())
             .expect("env should exist");
-        assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
         assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
     }
 
