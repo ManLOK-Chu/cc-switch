@@ -425,3 +425,122 @@ fn migration_snapshot_overrides_multi_source_directory_inference() {
         "migration should no longer infer OpenCode enablement from a duplicate directory alone"
     );
 }
+
+#[test]
+fn sync_to_app_dir_auto_creates_link() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let ssot_skill = home.join(".cc-switch").join("skills").join("test-skill");
+    write_skill(&ssot_skill, "Test Skill");
+
+    let state = create_test_state().expect("create test state");
+    let db = &state.db;
+
+    db.save_skill(&InstalledSkill {
+        id: "local:test-skill".to_string(),
+        name: "Test Skill".to_string(),
+        description: None,
+        directory: "test-skill".to_string(),
+        repo_owner: None,
+        repo_name: None,
+        repo_branch: None,
+        readme_url: None,
+        apps: SkillApps {
+            claude: true,
+            ..Default::default()
+        },
+        installed_at: 0,
+        content_hash: None,
+        updated_at: 0,
+    })
+    .expect("save skill");
+
+    SkillService::sync_to_app_dir("test-skill", &AppType::Claude).expect("sync should succeed");
+
+    let app_dir = home.join(".claude").join("skills").join("test-skill");
+    assert!(app_dir.exists(), "skill should exist in app dir");
+
+    // 验证是链接（symlink 或 junction）而非普通目录
+    let metadata = fs::symlink_metadata(&app_dir).expect("get metadata");
+    let is_symlink = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let is_junction = junction::is_junction(&app_dir).unwrap_or(false);
+    #[cfg(not(windows))]
+    let is_junction = false;
+    assert!(
+        is_symlink || is_junction,
+        "synced skill should be a symlink or junction"
+    );
+}
+
+#[test]
+fn sync_to_app_dir_auto_succeeds_without_admin_privileges() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let ssot_skill = home
+        .join(".cc-switch")
+        .join("skills")
+        .join("fallback-skill");
+    write_skill(&ssot_skill, "Fallback Skill");
+
+    let state = create_test_state().expect("create test state");
+    let db = &state.db;
+
+    db.save_skill(&InstalledSkill {
+        id: "local:fallback-skill".to_string(),
+        name: "Fallback Skill".to_string(),
+        description: None,
+        directory: "fallback-skill".to_string(),
+        repo_owner: None,
+        repo_name: None,
+        repo_branch: None,
+        readme_url: None,
+        apps: SkillApps {
+            claude: true,
+            ..Default::default()
+        },
+        installed_at: 0,
+        content_hash: None,
+        updated_at: 0,
+    })
+    .expect("save skill");
+
+    SkillService::sync_to_app_dir("fallback-skill", &AppType::Claude)
+        .expect("sync should succeed with fallback");
+
+    let app_dir = home.join(".claude").join("skills").join("fallback-skill");
+    assert!(app_dir.exists(), "skill should exist in app dir");
+    assert!(app_dir.join("SKILL.md").exists(), "SKILL.md should exist");
+}
+
+#[test]
+fn sync_to_app_removes_orphan_link_to_ssot() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let ssot_dir = home.join(".cc-switch").join("skills");
+    let orphan_target = ssot_dir.join("orphan-skill");
+    fs::create_dir_all(&orphan_target).expect("create orphan target");
+    fs::write(orphan_target.join("SKILL.md"), "---\nname: Orphan\n---\n").expect("write SKILL.md");
+
+    let app_dir = home.join(".claude").join("skills");
+    fs::create_dir_all(&app_dir).expect("create app dir");
+
+    // 创建一个指向 SSOT 的链接（使用 symlink，因为这是跨平台测试）
+    symlink_dir(&orphan_target, &app_dir.join("orphan-skill"));
+
+    let state = create_test_state().expect("create test state");
+
+    SkillService::sync_to_app(&state.db, &AppType::Claude).expect("sync to app");
+
+    // 孤儿链接应被清理
+    assert!(
+        !app_dir.join("orphan-skill").exists(),
+        "orphan link to SSOT should be removed"
+    );
+}

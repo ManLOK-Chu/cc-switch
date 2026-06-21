@@ -26,10 +26,10 @@ use crate::error::format_skill_error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncMethod {
-    /// 自动选择：优先 symlink，失败时回退到 copy
+    /// 自动选择：优先 symlink，失败时尝试 junction（仅 Windows），再回退到 copy
     #[default]
     Auto,
-    /// 符号链接（推荐，节省磁盘空间）
+    /// 仅符号链接（Windows 需管理员权限或开发者模式，不回退）
     Symlink,
     /// 文件复制（兼容模式）
     Copy,
@@ -1311,7 +1311,7 @@ impl SkillService {
 
         let ssot_dir = Self::get_ssot_dir()?;
         let restore_path = ssot_dir.join(&metadata.skill.directory);
-        if restore_path.exists() || Self::is_symlink(&restore_path) {
+        if restore_path.exists() || Self::is_link(&restore_path) {
             return Err(anyhow!(
                 "Restore target already exists: {}",
                 restore_path.display()
@@ -1565,6 +1565,27 @@ impl SkillService {
             .with_context(|| format!("创建符号链接失败: {} -> {}", src.display(), dest.display()))
     }
 
+    /// 创建 NTFS Junction（仅 Windows 有意义）
+    ///
+    /// Junction 不需要管理员权限或开发者模式，作为 symlink 的回退方案。
+    #[cfg(windows)]
+    fn create_junction(src: &Path, dest: &Path) -> Result<()> {
+        junction::create(src, dest).with_context(|| {
+            format!(
+                "创建 Junction 失败: {} -> {}",
+                src.display(),
+                dest.display()
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    fn create_junction(src: &Path, dest: &Path) -> Result<()> {
+        // Unix 无 Junction 概念，fallback 到 symlink
+        Self::create_symlink(src, dest)
+    }
+
     /// 检查路径是否为符号链接
     fn is_symlink(path: &Path) -> bool {
         path.symlink_metadata()
@@ -1572,15 +1593,31 @@ impl SkillService {
             .unwrap_or(false)
     }
 
+    /// 检查路径是否为 NTFS Junction
+    #[cfg(windows)]
+    fn is_junction(path: &Path) -> bool {
+        junction::is_junction(path).unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    fn is_junction(_path: &Path) -> bool {
+        false
+    }
+
+    /// 检查路径是否为符号链接或 Junction
+    fn is_link(path: &Path) -> bool {
+        Self::is_symlink(path) || Self::is_junction(path)
+    }
+
     /// 获取当前同步方式配置
     fn get_sync_method() -> SyncMethod {
         crate::settings::get_skill_sync_method()
     }
 
-    /// 同步 Skill 到应用目录（使用 symlink 或 copy）
+    /// 同步 Skill 到应用目录（使用 symlink、junction 或 copy）
     ///
     /// 根据配置和平台选择最佳同步方式：
-    /// - Auto: 优先尝试 symlink，失败时回退到 copy
+    /// - Auto: 优先尝试 symlink，失败时尝试 junction（仅 Windows），再回退到 copy
     /// - Symlink: 仅使用 symlink
     /// - Copy: 仅使用文件复制
     pub fn sync_to_app_dir(directory: &str, app: &AppType) -> Result<()> {
@@ -1602,13 +1639,13 @@ impl SkillService {
 
         match sync_method {
             SyncMethod::Auto => {
-                if dest.exists() && !Self::is_symlink(&dest) {
+                if dest.exists() && !Self::is_link(&dest) {
                     Self::replace_dest_with_copy(&source, &dest, directory)?;
                     log::debug!("Skill {directory} 已通过复制同步到 {app:?}");
                     return Ok(());
                 }
 
-                if Self::is_symlink(&dest) {
+                if Self::is_link(&dest) {
                     Self::remove_path(&dest)?;
                 }
 
@@ -1620,18 +1657,35 @@ impl SkillService {
                     }
                     Err(err) => {
                         log::warn!(
-                            "Symlink 创建失败，将回退到文件复制: {} -> {}. 错误: {err:#}",
+                            "Symlink 创建失败，将回退: {} -> {}. 错误: {err:#}",
                             source.display(),
                             dest.display()
                         );
                     }
                 }
+
+                // 尝试 junction（仅 Windows 有意义）
+                #[cfg(windows)]
+                match Self::create_junction(&source, &dest) {
+                    Ok(()) => {
+                        log::debug!("Skill {directory} 已通过 Junction 同步到 {app:?}");
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "Junction 创建失败，回退到文件复制: {} -> {}. 错误: {err:#}",
+                            source.display(),
+                            dest.display()
+                        );
+                    }
+                }
+
                 // Fallback 到 copy
                 Self::replace_dest_with_copy(&source, &dest, directory)?;
                 log::debug!("Skill {directory} 已通过复制同步到 {app:?}");
             }
             SyncMethod::Symlink => {
-                if dest.exists() || Self::is_symlink(&dest) {
+                if dest.exists() || Self::is_link(&dest) {
                     Self::remove_path(&dest)?;
                 }
                 Self::create_symlink(&source, &dest)?;
@@ -1654,7 +1708,7 @@ impl SkillService {
 
     /// 删除路径（支持 symlink 和真实目录）
     fn remove_path(path: &Path) -> Result<()> {
-        if Self::is_symlink(path) {
+        if Self::is_link(path) {
             // 符号链接：仅删除链接本身，不影响源文件
             #[cfg(unix)]
             fs::remove_file(path)?;
@@ -1701,7 +1755,7 @@ impl SkillService {
         let tmp_name = Self::sanitize_backup_segment(directory);
         let tmp = parent.join(format!(".{tmp_name}.tmp-{}-{nonce}", std::process::id()));
 
-        if tmp.exists() || Self::is_symlink(&tmp) {
+        if tmp.exists() || Self::is_link(&tmp) {
             Self::remove_path(&tmp)?;
         }
 
@@ -1711,7 +1765,7 @@ impl SkillService {
             return Err(err);
         }
 
-        if dest.exists() || Self::is_symlink(dest) {
+        if dest.exists() || Self::is_link(dest) {
             Self::remove_path(dest)?;
         }
 
@@ -1727,31 +1781,40 @@ impl SkillService {
         Ok(())
     }
 
-    /// 判断路径是否为指向 SSOT 目录内的符号链接。
-    fn is_symlink_to_ssot(path: &Path, ssot_dir: &Path) -> bool {
-        if !Self::is_symlink(path) {
+    /// 判断路径是否为指向 SSOT 目录内的符号链接或 Junction。
+    fn is_link_to_ssot(path: &Path, ssot_dir: &Path) -> bool {
+        if !Self::is_link(path) {
             return false;
         }
-
-        let Ok(target) = fs::read_link(path) else {
-            return false;
-        };
-
-        if target.is_absolute() && target.starts_with(ssot_dir) {
-            return true;
-        }
-
-        let resolved = path
-            .parent()
-            .map(|parent| parent.join(&target))
-            .unwrap_or(target.clone());
 
         let canonical_ssot = ssot_dir
             .canonicalize()
             .unwrap_or_else(|_| ssot_dir.to_path_buf());
-        let canonical_target = resolved.canonicalize().unwrap_or(resolved);
 
-        canonical_target.starts_with(&canonical_ssot)
+        // Junction: read_link 不可靠，直接 canonicalize
+        if Self::is_junction(path) {
+            return path
+                .canonicalize()
+                .map(|c| c.starts_with(&canonical_ssot))
+                .unwrap_or(false);
+        }
+
+        // Symlink: 尝试 read_link 获取目标
+        if let Ok(target) = fs::read_link(path) {
+            if target.is_absolute() && target.starts_with(ssot_dir) {
+                return true;
+            }
+
+            let resolved = path
+                .parent()
+                .map(|parent| parent.join(&target))
+                .unwrap_or(target);
+
+            let canonical_target = resolved.canonicalize().unwrap_or(resolved);
+            return canonical_target.starts_with(&canonical_ssot);
+        }
+
+        false
     }
 
     /// 从应用目录删除 Skill（支持 symlink 和真实目录）
@@ -1763,7 +1826,7 @@ impl SkillService {
         let app_dir = Self::get_app_skills_dir(app)?;
         let skill_path = app_dir.join(directory);
 
-        if skill_path.exists() || Self::is_symlink(&skill_path) {
+        if skill_path.exists() || Self::is_link(&skill_path) {
             Self::remove_path(&skill_path)?;
             log::debug!("Skill {directory} 已从 {app:?} 删除");
         }
@@ -1803,7 +1866,7 @@ impl SkillService {
                     continue;
                 }
 
-                if Self::is_symlink_to_ssot(&path, &ssot_dir) {
+                if Self::is_link_to_ssot(&path, &ssot_dir) {
                     Self::remove_path(&path)?;
                 }
             }
