@@ -1593,10 +1593,21 @@ impl SkillService {
             .unwrap_or(false)
     }
 
-    /// 检查路径是否为 NTFS Junction
+    /// 检查路径是否为 NTFS Junction（reparse point）
     #[cfg(windows)]
     fn is_junction(path: &Path) -> bool {
-        junction::is_junction(path).unwrap_or(false)
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileAttributesW, FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
+        attrs != u32::MAX && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0
     }
 
     #[cfg(unix)]
