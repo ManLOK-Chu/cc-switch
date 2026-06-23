@@ -10,11 +10,27 @@
  *
  * 这些预设主要用于"非白名单 Coding Agent（Codex/Gemini/Hermes/OpenClaw 等）想接入受 UA
  * 限制的上游"的场景——把转发请求伪装成已在白名单内的客户端。是否使用由用户显式选择。
+ *
+ * 动态预设使用模板占位符（如 {osVersion}、{arch}、{osName}），在用户点击时通过
+ * tauri-plugin-os 获取真实系统信息进行替换。静态预设不含占位符，直接使用。
  */
-export const USER_AGENT_PRESETS: readonly string[] = [
-  "claude-cli/2.1.161 (external, cli)",
-  "claude-cli/2.1.161",
-  "claude-code/1.0.0",
-  "claude-code/0.1.0",
-  "Kilo-Code/1.0",
+
+export interface UserAgentPreset {
+  /** 模板字符串；含 {osVersion} 等占位符时在点击时动态解析。 */
+  template: string;
+  /** 下拉菜单显示标签；省略时回退到 template。 */
+  label?: string;
+}
+
+export const USER_AGENT_PRESETS: readonly UserAgentPreset[] = [
+  { template: "claude-cli/2.1.161 (external, cli)" },
+  { template: "claude-cli/2.1.161" },
+  { template: "claude-code/1.0.0" },
+  { template: "claude-code/0.1.0" },
+  { template: "Kilo-Code/1.0" },
+  {
+    template:
+      "codex-tui/0.142.0 ({osName} {osVersion}; {arch}) Apple_Terminal/455 (codex-tui; 0.142.0)",
+    label: "codex-tui (dynamic)",
+  },
 ];
