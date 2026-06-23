@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isValidUserAgentHeader } from "@/lib/userAgent";
 import { USER_AGENT_PRESETS } from "@/config/userAgentPresets";
+import { resolvePreset } from "@/lib/userAgentPreset";
 
 interface CustomUserAgentFieldProps {
   /** 输入框的 id（用于 label htmlFor）；两个表单需传入各自唯一值。 */
@@ -33,6 +34,11 @@ export function CustomUserAgentField({
 }: CustomUserAgentFieldProps) {
   const { t } = useTranslation();
   const valid = isValidUserAgentHeader(value);
+
+  const handlePresetSelect = async (template: string) => {
+    const resolved = await resolvePreset(template);
+    onChange(resolved);
+  };
 
   return (
     <div className="space-y-2">
@@ -66,11 +72,11 @@ export function CustomUserAgentField({
           >
             {USER_AGENT_PRESETS.map((preset) => (
               <DropdownMenuItem
-                key={preset}
-                onSelect={() => onChange(preset)}
+                key={preset.template}
+                onSelect={() => handlePresetSelect(preset.template)}
                 className="font-mono text-xs"
               >
-                {preset}
+                {preset.label ?? preset.template}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
