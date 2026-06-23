@@ -64,6 +64,7 @@
       "endpoints": [
         "https://github.com/ManLOK-Chu/cc-switch/releases/latest/download/latest.json"
       ]
-    }
+    },
+    "os": {}
   }
 }
