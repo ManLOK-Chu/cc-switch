@@ -48,7 +48,7 @@ const CLAUDE_ONE_M_MARKER_FOR_CLIENT: &str = "[1M]";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClaudeTakeoverAuthPolicy {
     PreserveExistingOrAuthToken,
-    ManagedAccount { keep_auth_token: bool },
+    ManagedAccount,
 }
 
 #[derive(Clone)]
@@ -90,12 +90,10 @@ impl ProxyService {
         provider: &Provider,
     ) {
         let auth_policy = if provider.uses_managed_account_auth() {
-            // Codex 系（含仅凭 base_url 识别、无 provider_type meta 的）必须保留
-            // ANTHROPIC_AUTH_TOKEN 占位符：Claude Code 缺该键会弹登录提示（#3784）。
-            // Copilot 维持仅 API_KEY 占位，避免与 /login 管理的 key 冲突（#1049）。
-            ClaudeTakeoverAuthPolicy::ManagedAccount {
-                keep_auth_token: !provider.is_github_copilot(),
-            }
+            // Codex / Copilot OAuth：代理转发时使用数据库中 Provider 的真实 token，
+            // 不依赖此占位符。使用 ANTHROPIC_AUTH_TOKEN（非 ANTHROPIC_API_KEY），
+            // 因为 Claude Code 通过检测 ANTHROPIC_AUTH_TOKEN 判断登录状态（#3784）。
+            ClaudeTakeoverAuthPolicy::ManagedAccount
         } else {
             ClaudeTakeoverAuthPolicy::PreserveExistingOrAuthToken
         };
@@ -185,24 +183,18 @@ impl ProxyService {
                     );
                 }
             }
-            ClaudeTakeoverAuthPolicy::ManagedAccount { keep_auth_token } => {
+            ClaudeTakeoverAuthPolicy::ManagedAccount => {
                 for key in token_keys {
                     env.remove(key);
                 }
-                if keep_auth_token {
-                    // Codex 系：仅注入 AUTH_TOKEN 占位符，抑制 Claude Code 登录提示（#3784）。
-                    // 不再同时注入 API_KEY，避免 Claude Code 检测到双 key 冲突发出警告。
-                    env.insert(
-                        "ANTHROPIC_AUTH_TOKEN".to_string(),
-                        json!(PROXY_TOKEN_PLACEHOLDER),
-                    );
-                } else {
-                    // Copilot：仅注入 API_KEY 占位，避免与 /login 管理的 key 冲突（#1049）。
-                    env.insert(
-                        "ANTHROPIC_API_KEY".to_string(),
-                        json!(PROXY_TOKEN_PLACEHOLDER),
-                    );
-                }
+                // 使用 ANTHROPIC_AUTH_TOKEN 而非 ANTHROPIC_API_KEY：
+                // Claude Code 通过检测 ANTHROPIC_AUTH_TOKEN 判断登录状态；
+                // 使用 ANTHROPIC_API_KEY 会导致 Claude Code 认为用户未登录。
+                // 代理转发时使用数据库中 Provider 的真实 token，不依赖此占位符。
+                env.insert(
+                    "ANTHROPIC_AUTH_TOKEN".to_string(),
+                    json!(PROXY_TOKEN_PLACEHOLDER),
+                );
             }
         }
     }
@@ -2790,7 +2782,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_account_claude_takeover_uses_api_key_placeholder() {
+    fn managed_account_claude_takeover_uses_auth_token_placeholder() {
         let mut provider = Provider::with_id(
             "copilot".to_string(),
             "GitHub Copilot".to_string(),
@@ -2819,13 +2811,14 @@ mod tests {
             .and_then(|value| value.as_object())
             .expect("env should exist");
         assert_eq!(
-            env.get("ANTHROPIC_API_KEY")
+            env.get("ANTHROPIC_AUTH_TOKEN")
                 .and_then(|value| value.as_str()),
-            Some(PROXY_TOKEN_PLACEHOLDER)
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "managed OAuth providers should use ANTHROPIC_AUTH_TOKEN so Claude Code detects login"
         );
         assert!(
-            env.get("ANTHROPIC_AUTH_TOKEN").is_none(),
-            "managed OAuth providers should avoid Claude Auth Token login semantics"
+            env.get("ANTHROPIC_API_KEY").is_none(),
+            "managed OAuth providers should not use ANTHROPIC_API_KEY"
         );
     }
 
@@ -2900,8 +2893,8 @@ mod tests {
             "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             Some("claude-sonnet-4.6"),
         );
-        assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
-        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", None);
+        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
     }
 
     #[test]
@@ -3037,7 +3030,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_account_claude_takeover_copilot_removes_stale_auth_token() {
+    fn managed_account_claude_takeover_copilot_injects_auth_token() {
         let mut provider = Provider::with_id(
             "copilot".to_string(),
             "GitHub Copilot".to_string(),
@@ -3069,8 +3062,8 @@ mod tests {
             .get("env")
             .and_then(|value| value.as_object())
             .expect("env should exist");
-        assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
-        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", None);
+        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
     }
 
     #[test]
@@ -4572,7 +4565,7 @@ model = "gpt-5.1-codex"
             .write_claude_live(&json!({
                 "env": {
                     "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
-                    "ANTHROPIC_API_KEY": PROXY_TOKEN_PLACEHOLDER,
+                    "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
                     "ANTHROPIC_MODEL": "stale-model",
                     "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Stale Sonnet"
                 },
