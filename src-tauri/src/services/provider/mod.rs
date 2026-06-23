@@ -494,7 +494,7 @@ base_url = "http://localhost:8080"
         )
         .expect("seed taken-over live file");
 
-        state
+        let _proxy_info = state
             .proxy_service
             .start()
             .await
