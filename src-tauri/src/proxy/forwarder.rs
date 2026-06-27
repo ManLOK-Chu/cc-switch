@@ -1418,10 +1418,10 @@ impl RequestForwarder {
             &filtered_body,
             self.session_client_provided,
         );
-        let request_is_streaming =
+        let preliminary_request_is_streaming =
             is_streaming_request(&effective_endpoint, &filtered_body, headers);
-        let force_identity_encoding =
-            needs_transform || codex_responses_to_chat || request_is_streaming;
+        let preliminary_force_identity_encoding =
+            needs_transform || codex_responses_to_chat || preliminary_request_is_streaming;
 
         // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
         let mut codex_oauth_account_id: Option<String> = None;
@@ -1727,7 +1727,7 @@ impl RequestForwarder {
             if key_str.eq_ignore_ascii_case("accept-encoding") {
                 if !saw_accept_encoding {
                     saw_accept_encoding = true;
-                    if force_identity_encoding {
+                    if preliminary_force_identity_encoding {
                         ordered_headers.append(
                             http::header::ACCEPT_ENCODING,
                             http::HeaderValue::from_static("identity"),
@@ -1794,7 +1794,7 @@ impl RequestForwarder {
         }
 
         // transform / SSE 路径在缺失时补 identity；普通透传不主动补 accept-encoding
-        if !saw_accept_encoding && force_identity_encoding {
+        if !saw_accept_encoding && preliminary_force_identity_encoding {
             ordered_headers.append(
                 http::header::ACCEPT_ENCODING,
                 http::HeaderValue::from_static("identity"),
@@ -1856,6 +1856,19 @@ impl RequestForwarder {
                 .and_then(|meta| meta.local_proxy_request_overrides.as_ref()),
             is_copilot,
         );
+
+        let request_is_streaming =
+            is_streaming_request(&effective_endpoint, &filtered_body, &ordered_headers);
+        let force_identity_encoding = should_force_identity_encoding_for_request(
+            needs_transform,
+            codex_responses_to_chat,
+            &effective_endpoint,
+            &filtered_body,
+            &ordered_headers,
+        );
+        if force_identity_encoding {
+            enforce_identity_accept_encoding(&mut ordered_headers);
+        }
 
         reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
 
@@ -2550,13 +2563,30 @@ fn is_streaming_request(endpoint: &str, body: &Value, headers: &axum::http::Head
         .unwrap_or(false)
 }
 
+fn should_force_identity_encoding_for_request(
+    needs_transform: bool,
+    codex_responses_to_chat: bool,
+    endpoint: &str,
+    body: &Value,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    needs_transform || codex_responses_to_chat || is_streaming_request(endpoint, body, headers)
+}
+
+fn enforce_identity_accept_encoding(headers: &mut http::HeaderMap) {
+    headers.insert(
+        http::header::ACCEPT_ENCODING,
+        http::HeaderValue::from_static("identity"),
+    );
+}
+
 #[cfg(test)]
 fn should_force_identity_encoding(
     endpoint: &str,
     body: &Value,
     headers: &axum::http::HeaderMap,
 ) -> bool {
-    is_streaming_request(endpoint, body, headers)
+    should_force_identity_encoding_for_request(false, false, endpoint, body, headers)
 }
 
 fn map_reqwest_send_error(error: reqwest::Error) -> ProxyError {
@@ -3517,6 +3547,45 @@ mod tests {
             &json!({ "model": "gpt-5" }),
             &headers
         ));
+    }
+
+    #[test]
+    fn local_proxy_accept_override_forces_identity_encoding_after_final_detection() {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(
+            axum::http::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+
+        let preliminary_force_identity =
+            should_force_identity_encoding("/v1/chat/completions", &json!({}), &headers);
+        assert!(!preliminary_force_identity);
+
+        let overrides = LocalProxyRequestOverrides {
+            headers: std::collections::HashMap::from([(
+                "accept".to_string(),
+                "text/event-stream".to_string(),
+            )]),
+            body: None,
+        };
+        apply_local_proxy_header_overrides(&mut headers, Some(&overrides), false);
+
+        let final_force_identity =
+            should_force_identity_encoding("/v1/chat/completions", &json!({}), &headers);
+        assert!(final_force_identity);
+
+        if final_force_identity {
+            enforce_identity_accept_encoding(&mut headers);
+        }
+
+        assert_eq!(
+            headers
+                .get(axum::http::header::ACCEPT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("identity"),
+            "final streaming detection after Accept override must force identity encoding"
+        );
     }
 
     #[test]
