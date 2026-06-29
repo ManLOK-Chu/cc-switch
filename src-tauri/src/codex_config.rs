@@ -1098,6 +1098,14 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
                 obj.insert("inputModalities".to_string(), json!(mods));
             }
         }
+        if let Some(base_instructions) = entry
+            .get("base_instructions")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            obj.insert("baseInstructions".to_string(), json!(base_instructions));
+        }
 
         entries.push(Value::Object(obj));
     }
@@ -2783,6 +2791,70 @@ web_search = "disabled"
             )
             .is_none(),
             "entries lacking slug are skipped; a fully-skipped catalog yields None"
+        );
+    }
+
+    #[test]
+    fn build_simplified_catalog_preserves_native_profile_overrides() {
+        // Regression: round-trip must preserve all native-profile per-row
+        // overrides (supports_parallel_tool_calls, input_modalities,
+        // base_instructions) so a DB-SSOT-missing fallback doesn't silently
+        // drop the vendor's official base_instructions.
+        let catalog = r#"{
+            "models": [
+                {
+                    "slug": "MiniMax-M3",
+                    "display_name": "MiniMax-M3",
+                    "context_window": 1000000,
+                    "supports_parallel_tool_calls": true,
+                    "input_modalities": ["text", "image"],
+                    "base_instructions": "You are Codex, a coding agent based on MiniMax-M3."
+                },
+                {
+                    "slug": "mimo-v2.5-pro",
+                    "display_name": "MiMo V2.5 Pro",
+                    "context_window": 1048576,
+                    "base_instructions": "You are MiMo, developed by Xiaomi."
+                }
+            ]
+        }"#;
+        let result = build_simplified_catalog_from_texts("", catalog).expect("entries");
+        let models = result.get("models").unwrap().as_array().unwrap();
+        assert_eq!(models.len(), 2);
+
+        let minimax = &models[0];
+        assert_eq!(
+            minimax
+                .get("supportsParallelToolCalls")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "supports_parallel_tool_calls must survive round-trip"
+        );
+        assert_eq!(
+            minimax.get("inputModalities"),
+            Some(&json!(["text", "image"])),
+            "input_modalities must survive round-trip"
+        );
+        assert_eq!(
+            minimax.get("baseInstructions").and_then(|v| v.as_str()),
+            Some("You are Codex, a coding agent based on MiniMax-M3."),
+            "base_instructions must survive round-trip"
+        );
+
+        // Entry without parallel/modalities but with base_instructions.
+        let mimo = &models[1];
+        assert!(
+            mimo.get("supportsParallelToolCalls").is_none(),
+            "absent supports_parallel_tool_calls should not be synthesized"
+        );
+        assert!(
+            mimo.get("inputModalities").is_none(),
+            "absent input_modalities should not be synthesized"
+        );
+        assert_eq!(
+            mimo.get("baseInstructions").and_then(|v| v.as_str()),
+            Some("You are MiMo, developed by Xiaomi."),
+            "base_instructions without other overrides must still survive"
         );
     }
 

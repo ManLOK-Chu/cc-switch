@@ -2035,6 +2035,22 @@ impl ProxyService {
                 &mut effective_settings,
             )
             .map_err(|e| format!("注入统一会话路由失败: {e}"))?;
+
+            // 存储 catalog tool profile 到备份元数据，使 verbatim 还原时能恢复
+            // 正确的 profile（NativeResponses vs ProxyChat），而非硬编码 ProxyChat。
+            // 该字段仅用于备份内部传递，还原时会被剥离，不会泄漏到 auth.json 或
+            // config.toml。
+            let catalog_profile = provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.api_format.as_deref())
+                .unwrap_or("openai_chat");
+            if let Some(obj) = effective_settings.as_object_mut() {
+                obj.insert(
+                    "_cc_switch_catalog_profile".to_string(),
+                    json!(catalog_profile),
+                );
+            }
         }
 
         let backup_json = match app_type_enum {
@@ -2476,18 +2492,22 @@ impl ProxyService {
         // living in the config's `experimental_bearer_token`). Computing it up here
         // keeps every config-writing branch — write-auth, delete-auth, no-auth —
         // consistent instead of letting the empty-auth path skip projection.
-        // Verbatim restore has no Provider in hand (we only have the stored
-        // backup config), so the catalog tool profile can't be recovered here.
-        // Default to ProxyChat: a restored native-direct backup keeps its inline
-        // modelCatalog but would not get apply_patch re-stripped until the next
-        // provider switch rewrites it via write_live_snapshot. Acceptable known
-        // limitation (restore-of-deleted-provider-backup only).
+        //
+        // Recover the catalog tool profile from the backup metadata (injected by
+        // `update_live_backup_from_provider_inner`) so NativeResponses backups
+        // are restored with the correct profile. Fallback to ProxyChat for
+        // older backups that lack the metadata field.
+        let backup_profile = config
+            .get("_cc_switch_catalog_profile")
+            .and_then(|v| v.as_str())
+            .map(|fmt| crate::codex_config::CodexCatalogToolProfile::from_api_format(Some(fmt)))
+            .unwrap_or(crate::codex_config::CodexCatalogToolProfile::ProxyChat);
         let prepared_cfg = config_str
             .map(|cfg| {
                 crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
                     config,
                     cfg,
-                    crate::codex_config::CodexCatalogToolProfile::ProxyChat,
+                    backup_profile,
                 )
             })
             .transpose()
@@ -5832,8 +5852,78 @@ requires_openai_auth = true
         );
     }
 
-    /// Regression: a provider-rebuilt backup can pair an inline `modelCatalog`
-    /// with EMPTY `auth.json` (`{}`) — the bearer-token / Mobile-compat shape
+    /// Regression: a NativeResponses backup (e.g. MiMo/MiniMax) must be
+    /// restored with the correct catalog tool profile so that freeform
+    /// `apply_patch` (type="custom") is stripped from the generated catalog.
+    /// Before the fix, verbatim restore hardcoded ProxyChat for all backups,
+    /// causing native gateways to reject the custom tool with a hard 400.
+    #[tokio::test]
+    #[serial]
+    async fn codex_restore_native_responses_backup_uses_correct_profile() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        // Seed models_cache.json with the gpt-5.5 template for catalog generation.
+        let codex_dir = crate::codex_config::get_codex_config_dir();
+        std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+        std::fs::write(
+            codex_dir.join("models_cache.json"),
+            r#"{"models":[{"slug":"gpt-5.5"}]}"#,
+        )
+        .expect("seed models_cache template");
+
+        // Provider-rebuilt backup for a NativeResponses provider (e.g. MiniMax),
+        // including the _cc_switch_catalog_profile metadata injected by
+        // update_live_backup_from_provider_inner.
+        let backup_json = serde_json::to_string(&json!({
+            "auth": { "OPENAI_API_KEY": "minimax-key" },
+            "config": "model_provider = \"custom\"\nmodel = \"MiniMax-M3\"\n\n[model_providers.custom]\nname = \"MiniMax\"\nbase_url = \"https://api.minimaxi.com/v1\"\nwire_api = \"responses\"\n",
+            "modelCatalog": {
+                "models": [
+                    { "model": "MiniMax-M3", "displayName": "MiniMax-M3", "contextWindow": 1_000_000 }
+                ]
+            },
+            "_cc_switch_catalog_profile": "openai_responses"
+        }))
+        .expect("serialize backup");
+        db.save_live_backup("codex", &backup_json)
+            .await
+            .expect("seed live backup");
+
+        service
+            .restore_live_config_for_app_with_fallback(&AppType::Codex)
+            .await
+            .expect("restore codex live from backup");
+
+        let catalog_path = crate::codex_config::get_codex_model_catalog_path();
+        assert!(
+            catalog_path.exists(),
+            "restore must generate the cc-switch catalog file"
+        );
+        let catalog: Value = serde_json::from_str(
+            &std::fs::read_to_string(&catalog_path).expect("read generated catalog"),
+        )
+        .expect("parse generated catalog");
+
+        let entry = &catalog["models"][0];
+        assert_eq!(
+            entry.get("slug").and_then(|v| v.as_str()),
+            Some("MiniMax-M3"),
+            "catalog must contain the backup's model"
+        );
+        assert!(
+            entry.get("apply_patch_tool_type").is_none(),
+            "NativeResponses backup must strip freeform apply_patch tool"
+        );
+        assert_eq!(
+            entry.get("shell_type").and_then(|v| v.as_str()),
+            Some("shell_command"),
+            "NativeResponses backup must use shell_command for edits"
+        );
+    }
     /// where the API key lives in the config's `experimental_bearer_token`. The
     /// empty-auth restore branch deletes `auth.json` and writes config raw; it
     /// must still project the inline catalog (decision is orthogonal to auth), or
