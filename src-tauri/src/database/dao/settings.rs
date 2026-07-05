@@ -13,6 +13,10 @@ impl Database {
         format!("common_config_{app_type}_cleared")
     }
 
+    fn prompt_common_snippet_key(app_type: &str) -> String {
+        format!("prompt_common_snippet_{app_type}")
+    }
+
     /// 获取设置值
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, AppError> {
         let conn = lock_conn!(self.conn);
@@ -132,6 +136,29 @@ impl Database {
             conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
                 .map_err(|e| AppError::Database(e.to_string()))?;
             Ok(())
+        }
+    }
+
+    // --- 通用提示词片段 (Prompt Common Snippet) ---
+
+    pub fn get_prompt_common_snippet(&self, app_type: &str) -> Result<Option<String>, AppError> {
+        self.get_setting(&Self::prompt_common_snippet_key(app_type))
+    }
+
+    pub fn set_prompt_common_snippet(
+        &self,
+        app_type: &str,
+        snippet: Option<String>,
+    ) -> Result<(), AppError> {
+        let key = Self::prompt_common_snippet_key(app_type);
+        match snippet {
+            Some(value) if !value.trim().is_empty() => self.set_setting(&key, &value),
+            _ => {
+                let conn = lock_conn!(self.conn);
+                conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(())
+            }
         }
     }
 

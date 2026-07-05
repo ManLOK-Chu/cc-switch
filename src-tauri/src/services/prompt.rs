@@ -7,6 +7,8 @@ use crate::prompt::Prompt;
 use crate::prompt_files::prompt_file_path;
 use crate::store::AppState;
 
+const COMMON_PROMPT_PLACEHOLDER: &str = "{{common}}";
+
 /// 安全地获取当前 Unix 时间戳
 fn get_unix_timestamp() -> Result<i64, AppError> {
     std::time::SystemTime::now()
@@ -18,6 +20,29 @@ fn get_unix_timestamp() -> Result<i64, AppError> {
 pub struct PromptService;
 
 impl PromptService {
+    pub(crate) fn render_prompt_content(prompt: &Prompt, snippet: Option<&str>) -> String {
+        if prompt.content.contains(COMMON_PROMPT_PLACEHOLDER) {
+            prompt
+                .content
+                .replace(COMMON_PROMPT_PLACEHOLDER, snippet.unwrap_or_default())
+        } else {
+            prompt.content.clone()
+        }
+    }
+
+    fn render_prompt_for_write(
+        state: &AppState,
+        app: &AppType,
+        prompt: &Prompt,
+    ) -> Result<String, AppError> {
+        let snippet = if prompt.content.contains(COMMON_PROMPT_PLACEHOLDER) {
+            state.db.get_prompt_common_snippet(app.as_str())?
+        } else {
+            None
+        };
+        Ok(Self::render_prompt_content(prompt, snippet.as_deref()))
+    }
+
     pub fn get_prompts(
         state: &AppState,
         app: AppType,
@@ -39,7 +64,8 @@ impl PromptService {
         if is_enabled {
             // 启用提示词：写入内容到文件
             let target_path = prompt_file_path(&app)?;
-            write_text_file(&target_path, &prompt.content)?;
+            let final_content = Self::render_prompt_for_write(state, &app, &prompt)?;
+            write_text_file(&target_path, &final_content)?;
         } else {
             // 禁用提示词：检查是否还有其他已启用的提示词
             let prompts = state.db.get_prompts(app.as_str())?;
@@ -84,11 +110,15 @@ impl PromptService {
                         .find(|(_, p)| p.enabled)
                         .map(|(id, p)| (id.clone(), p))
                     {
-                        let timestamp = get_unix_timestamp()?;
-                        enabled_prompt.content = live_content.clone();
-                        enabled_prompt.updated_at = Some(timestamp);
-                        log::info!("回填 live 提示词内容到已启用项: {enabled_id}");
-                        state.db.save_prompt(app.as_str(), enabled_prompt)?;
+                        if enabled_prompt.content.contains(COMMON_PROMPT_PLACEHOLDER) {
+                            log::info!("跳过含通用片段占位符的已启用提示词回填: {enabled_id}");
+                        } else {
+                            let timestamp = get_unix_timestamp()?;
+                            enabled_prompt.content = live_content.clone();
+                            enabled_prompt.updated_at = Some(timestamp);
+                            log::info!("回填 live 提示词内容到已启用项: {enabled_id}");
+                            state.db.save_prompt(app.as_str(), enabled_prompt)?;
+                        }
                     } else {
                         // 没有已启用的提示词，则创建一次备份（避免重复备份）
                         let content_exists = prompts
@@ -129,7 +159,8 @@ impl PromptService {
 
         if let Some(prompt) = prompts.get_mut(id) {
             prompt.enabled = true;
-            write_text_file(&target_path, &prompt.content)?; // 原子写入
+            let final_content = Self::render_prompt_for_write(state, &app, prompt)?;
+            write_text_file(&target_path, &final_content)?; // 原子写入
             state.db.save_prompt(app.as_str(), prompt)?;
         } else {
             return Err(AppError::InvalidInput(format!("提示词 {id} 不存在")));
@@ -140,6 +171,36 @@ impl PromptService {
             state.db.save_prompt(app.as_str(), prompt)?;
         }
 
+        Ok(())
+    }
+
+    pub fn get_prompt_common_snippet(
+        state: &AppState,
+        app: AppType,
+    ) -> Result<Option<String>, AppError> {
+        state.db.get_prompt_common_snippet(app.as_str())
+    }
+
+    pub fn set_prompt_common_snippet(
+        state: &AppState,
+        app: AppType,
+        value: String,
+    ) -> Result<(), AppError> {
+        state
+            .db
+            .set_prompt_common_snippet(app.as_str(), Some(value))?;
+
+        let prompts = state.db.get_prompts(app.as_str())?;
+        let Some(enabled_prompt) = prompts
+            .values()
+            .find(|prompt| prompt.enabled && prompt.content.contains(COMMON_PROMPT_PLACEHOLDER))
+        else {
+            return Ok(());
+        };
+
+        let target_path = prompt_file_path(&app)?;
+        let final_content = Self::render_prompt_for_write(state, &app, enabled_prompt)?;
+        write_text_file(&target_path, &final_content)?;
         Ok(())
     }
 
@@ -238,5 +299,235 @@ impl PromptService {
 
         log::info!("自动导入完成: {}", app.as_str());
         Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Database;
+    use crate::prompt_files::prompt_file_path;
+    use serial_test::serial;
+    use std::fs;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn with_test_state<T>(test: impl FnOnce(&AppState) -> T) -> T {
+        let _guard = test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        std::env::set_var("HOME", temp.path());
+
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        let state = AppState::new(db);
+        let result = test(&state);
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        match old_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        result
+    }
+
+    fn make_prompt(id: &str, content: &str, enabled: bool) -> Prompt {
+        Prompt {
+            id: id.to_string(),
+            name: id.to_string(),
+            content: content.to_string(),
+            description: None,
+            enabled,
+            created_at: Some(1),
+            updated_at: Some(1),
+        }
+    }
+
+    #[test]
+    fn render_prompt_content_replaces_common_placeholder() {
+        let prompt = make_prompt("p1", "before {{common}} after", true);
+
+        let rendered = PromptService::render_prompt_content(&prompt, Some("shared"));
+
+        assert_eq!(rendered, "before shared after");
+    }
+
+    #[test]
+    fn render_prompt_content_replaces_multiple_placeholders() {
+        let prompt = make_prompt("p1", "{{common}}\nbody\n{{common}}", true);
+
+        let rendered = PromptService::render_prompt_content(&prompt, Some("shared"));
+
+        assert_eq!(rendered, "shared\nbody\nshared");
+    }
+
+    #[test]
+    fn render_prompt_content_empty_snippet_becomes_empty_string() {
+        let prompt = make_prompt("p1", "before {{common}} after", true);
+
+        let rendered = PromptService::render_prompt_content(&prompt, Some(""));
+
+        assert_eq!(rendered, "before  after");
+    }
+
+    #[test]
+    fn render_prompt_content_missing_snippet_treated_as_empty() {
+        let prompt = make_prompt("p1", "before {{common}} after", true);
+
+        let rendered = PromptService::render_prompt_content(&prompt, None);
+
+        assert_eq!(rendered, "before  after");
+    }
+
+    #[test]
+    fn render_prompt_content_without_placeholder_keeps_content() {
+        let prompt = make_prompt("p1", "plain content", true);
+
+        let rendered = PromptService::render_prompt_content(&prompt, Some("shared"));
+
+        assert_eq!(rendered, "plain content");
+    }
+
+    #[test]
+    fn get_set_prompt_common_snippet_roundtrip() {
+        let db = Database::memory().expect("in-memory database");
+
+        assert_eq!(
+            db.get_prompt_common_snippet("claude").expect("get empty"),
+            None
+        );
+
+        db.set_prompt_common_snippet("claude", Some("shared".to_string()))
+            .expect("set snippet");
+
+        assert_eq!(
+            db.get_prompt_common_snippet("claude").expect("get snippet"),
+            Some("shared".to_string())
+        );
+    }
+
+    #[test]
+    fn clear_prompt_common_snippet_deletes_key() {
+        let db = Database::memory().expect("in-memory database");
+        db.set_prompt_common_snippet("claude", Some("shared".to_string()))
+            .expect("set snippet");
+
+        db.set_prompt_common_snippet("claude", Some("   \n".to_string()))
+            .expect("clear snippet");
+
+        assert_eq!(
+            db.get_prompt_common_snippet("claude").expect("get cleared"),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn upsert_enabled_prompt_writes_rendered_common_content() {
+        with_test_state(|state| {
+            let prompt = make_prompt("p1", "before {{common}} after", true);
+            state
+                .db
+                .set_prompt_common_snippet("claude", Some("shared".to_string()))
+                .expect("set snippet");
+
+            PromptService::upsert_prompt(state, AppType::Claude, "p1", prompt)
+                .expect("upsert prompt");
+
+            let target_path = prompt_file_path(&AppType::Claude).expect("prompt path");
+            let live_content = fs::read_to_string(target_path).expect("read live prompt");
+            assert_eq!(live_content, "before shared after");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn set_prompt_common_snippet_rewrites_enabled_prompt_live_file() {
+        with_test_state(|state| {
+            let prompt = make_prompt("p1", "before {{common}} after", true);
+            state
+                .db
+                .save_prompt(AppType::Claude.as_str(), &prompt)
+                .expect("save prompt");
+
+            PromptService::set_prompt_common_snippet(state, AppType::Claude, "shared".to_string())
+                .expect("set snippet");
+
+            let target_path = prompt_file_path(&AppType::Claude).expect("prompt path");
+            let live_content = fs::read_to_string(target_path).expect("read live prompt");
+            assert_eq!(live_content, "before shared after");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn set_prompt_common_snippet_does_not_rewrite_live_file_without_placeholder() {
+        with_test_state(|state| {
+            let prompt = make_prompt("p1", "plain content", true);
+            state
+                .db
+                .save_prompt(AppType::Claude.as_str(), &prompt)
+                .expect("save prompt");
+            let target_path = prompt_file_path(&AppType::Claude).expect("prompt path");
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).expect("create prompt dir");
+            }
+            fs::write(&target_path, "existing live").expect("write live prompt");
+
+            PromptService::set_prompt_common_snippet(state, AppType::Claude, "shared".to_string())
+                .expect("set snippet");
+
+            let live_content = fs::read_to_string(target_path).expect("read live prompt");
+            assert_eq!(live_content, "existing live");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn enable_prompt_does_not_backfill_rendered_common_content() {
+        with_test_state(|state| {
+            let prompt_with_common = make_prompt("p1", "before {{common}} after", true);
+            let next_prompt = make_prompt("p2", "next prompt", false);
+            state
+                .db
+                .save_prompt(AppType::Claude.as_str(), &prompt_with_common)
+                .expect("save prompt with common");
+            state
+                .db
+                .save_prompt(AppType::Claude.as_str(), &next_prompt)
+                .expect("save next prompt");
+            state
+                .db
+                .set_prompt_common_snippet("claude", Some("shared".to_string()))
+                .expect("set snippet");
+            let target_path = prompt_file_path(&AppType::Claude).expect("prompt path");
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).expect("create prompt dir");
+            }
+            fs::write(&target_path, "before shared after").expect("write rendered live prompt");
+
+            PromptService::enable_prompt(state, AppType::Claude, "p2").expect("enable next prompt");
+
+            let prompts = state
+                .db
+                .get_prompts(AppType::Claude.as_str())
+                .expect("get prompts");
+            assert_eq!(
+                prompts.get("p1").expect("first prompt").content,
+                "before {{common}} after"
+            );
+            assert_eq!(prompts.len(), 2);
+        });
     }
 }

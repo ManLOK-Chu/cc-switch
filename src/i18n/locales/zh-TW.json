@@ -1821,6 +1821,17 @@
     "descriptionPlaceholder": "選填的描述資訊",
     "content": "內容",
     "contentPlaceholder": "# {{filename}}\n\n在此輸入提示詞內容...",
+    "commonSnippet": {
+      "editLink": "編輯通用提示詞",
+      "placeholderHint": "使用 {{placeholder}} 在內容中插入通用提示詞。",
+      "modalTitle": "編輯通用提示詞片段",
+      "infoTitle": "什麼是通用提示詞？",
+      "infoBody": "通用提示詞用於在多條提示詞間共享公共段落。先在這裡編輯公共內容，再在單條提示詞內容裡寫 {{placeholder}}，啟用時會自動替換。",
+      "editorPlaceholder": "在此輸入通用提示詞內容...",
+      "saveSuccess": "通用提示詞已儲存",
+      "saveFailed": "儲存通用提示詞失敗",
+      "loadFailed": "載入通用提示詞失敗"
+    },
     "loadFailed": "載入提示詞失敗",
     "saveSuccess": "儲存成功",
     "saveFailed": "儲存失敗",

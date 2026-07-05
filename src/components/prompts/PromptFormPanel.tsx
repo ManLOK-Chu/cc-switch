@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import MarkdownEditor from "@/components/MarkdownEditor";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Prompt, AppId } from "@/lib/api";
+import PromptCommonSnippetLink from "./PromptCommonSnippetLink";
 
 interface PromptFormPanelProps {
   appId: AppId;
@@ -138,9 +139,12 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
         </div>
 
         <div>
-          <Label htmlFor="content" className="block mb-2 text-foreground">
-            {t("prompts.content")}
-          </Label>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <Label htmlFor="content" className="text-foreground">
+              {t("prompts.content")}
+            </Label>
+            <PromptCommonSnippetLink appId={appId} />
+          </div>
           <MarkdownEditor
             value={content}
             onChange={setContent}
