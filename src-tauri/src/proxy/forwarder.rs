@@ -2612,6 +2612,57 @@ fn summarize_text_for_log(text: &str, max_chars: usize) -> String {
     format!("{truncated}...")
 }
 
+/// 从请求体提取思考等级摘要，供 INFO 请求日志输出。
+///
+/// 保留原始字段名（thinking / reasoning_effort / reasoning.effort /
+/// output_config.effort），多字段并存时按上述顺序全量列出，缺失则省略。
+/// thinking.type == "enabled" 且有 budget_tokens 时输出 `thinking=budget[{n}]`。
+fn extract_thinking_summary(body: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    if let Some(t) = body
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(|v| v.as_str())
+    {
+        if t == "enabled" {
+            if let Some(budget) = body
+                .get("thinking")
+                .and_then(|t| t.get("budget_tokens"))
+                .and_then(|v| v.as_u64())
+            {
+                out.push(format!("thinking=budget[{budget}]"));
+            } else {
+                out.push("thinking=enabled".to_string());
+            }
+        } else {
+            out.push(format!("thinking={t}"));
+        }
+    }
+
+    if let Some(effort) = body.get("reasoning_effort").and_then(|v| v.as_str()) {
+        out.push(format!("reasoning_effort={effort}"));
+    }
+
+    if let Some(effort) = body
+        .get("reasoning")
+        .and_then(|r| r.get("effort"))
+        .and_then(|v| v.as_str())
+    {
+        out.push(format!("reasoning.effort={effort}"));
+    }
+
+    if let Some(effort) = body
+        .get("output_config")
+        .and_then(|oc| oc.get("effort"))
+        .and_then(|v| v.as_str())
+    {
+        out.push(format!("output_config.effort={effort}"));
+    }
+
+    out
+}
+
 fn apply_local_proxy_body_overrides(
     body: &mut Value,
     overrides: &LocalProxyRequestOverrides,
@@ -3883,5 +3934,110 @@ mod tests {
         });
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[test]
+    fn extract_thinking_summary_adaptive_without_budget() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "thinking": {"type": "adaptive"}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["thinking=adaptive".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_enabled_without_budget() {
+        let body = serde_json::json!({
+            "thinking": {"type": "enabled"}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["thinking=enabled".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_enabled_with_budget() {
+        let body = serde_json::json!({
+            "thinking": {"type": "enabled", "budget_tokens": 8192}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["thinking=budget[8192]".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_disabled() {
+        let body = serde_json::json!({
+            "thinking": {"type": "disabled"}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["thinking=disabled".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_reasoning_effort() {
+        let body = serde_json::json!({
+            "reasoning_effort": "high"
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["reasoning_effort=high".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_reasoning_effort_nested() {
+        let body = serde_json::json!({
+            "reasoning": {"effort": "none"}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["reasoning.effort=none".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_output_config_effort() {
+        let body = serde_json::json!({
+            "output_config": {"effort": "max"}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec!["output_config.effort=max".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_multiple_fields_preserves_order() {
+        let body = serde_json::json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "max"}
+        });
+        assert_eq!(
+            super::extract_thinking_summary(&body),
+            vec![
+                "thinking=adaptive".to_string(),
+                "output_config.effort=max".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_thinking_summary_empty_object() {
+        let body = serde_json::json!({});
+        assert!(super::extract_thinking_summary(&body).is_empty());
+    }
+
+    #[test]
+    fn extract_thinking_summary_non_object_body() {
+        let body = serde_json::json!(null);
+        assert!(super::extract_thinking_summary(&body).is_empty());
     }
 }
