@@ -1851,6 +1851,17 @@
     "descriptionPlaceholder": "Optional description",
     "content": "Content",
     "contentPlaceholder": "# {{filename}}\n\nEnter prompt content here...",
+    "commonSnippet": {
+      "editLink": "Edit common prompt",
+      "placeholderHint": "Use {{placeholder}} in the content to insert the common prompt.",
+      "modalTitle": "Edit common prompt snippet",
+      "infoTitle": "What is a common prompt?",
+      "infoBody": "A common prompt shares reusable sections across prompts. Edit the shared content here, then write {{placeholder}} in an individual prompt. It is replaced when the prompt is enabled.",
+      "editorPlaceholder": "Enter common prompt content here...",
+      "saveSuccess": "Common prompt saved",
+      "saveFailed": "Failed to save common prompt",
+      "loadFailed": "Failed to load common prompt"
+    },
     "loadFailed": "Failed to load prompts",
     "saveSuccess": "Saved successfully",
     "saveFailed": "Failed to save",

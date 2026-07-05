@@ -1851,6 +1851,17 @@
     "descriptionPlaceholder": "任意の説明",
     "content": "内容",
     "contentPlaceholder": "# {{filename}}\n\nここにプロンプト内容を入力...",
+    "commonSnippet": {
+      "editLink": "共通プロンプトを編集",
+      "placeholderHint": "内容に {{placeholder}} を書くと共通プロンプトを挿入できます。",
+      "modalTitle": "共通プロンプトスニペットを編集",
+      "infoTitle": "共通プロンプトとは？",
+      "infoBody": "共通プロンプトは複数のプロンプトで共有する文章です。ここで共通内容を編集し、個別のプロンプトに {{placeholder}} を書くと、有効化時に自動で置換されます。",
+      "editorPlaceholder": "共通プロンプトの内容を入力...",
+      "saveSuccess": "共通プロンプトを保存しました",
+      "saveFailed": "共通プロンプトの保存に失敗しました",
+      "loadFailed": "共通プロンプトの読み込みに失敗しました"
+    },
     "loadFailed": "プロンプトの読み込みに失敗しました",
     "saveSuccess": "保存しました",
     "saveFailed": "保存に失敗しました",

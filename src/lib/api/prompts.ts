@@ -35,4 +35,12 @@ export const promptsApi = {
   async getCurrentFileContent(app: AppId): Promise<string | null> {
     return await invoke("get_current_prompt_file_content", { app });
   },
+
+  async getPromptCommonSnippet(app: AppId): Promise<string | null> {
+    return await invoke("get_prompt_common_snippet", { app });
+  },
+
+  async setPromptCommonSnippet(app: AppId, value: string): Promise<void> {
+    return await invoke("set_prompt_common_snippet", { app, value });
+  },
 };

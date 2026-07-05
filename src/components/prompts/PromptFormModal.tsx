@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import MarkdownEditor from "@/components/MarkdownEditor";
 import type { Prompt, AppId } from "@/lib/api";
+import PromptCommonSnippetLink from "./PromptCommonSnippetLink";
 
 interface PromptFormModalProps {
   appId: AppId;
@@ -130,9 +131,10 @@ const PromptFormModal: React.FC<PromptFormModalProps> = ({
           </div>
 
           <div>
-            <Label htmlFor="content" className="mb-2 block">
-              {t("prompts.content")}
-            </Label>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <Label htmlFor="content">{t("prompts.content")}</Label>
+              <PromptCommonSnippetLink appId={appId} />
+            </div>
             <MarkdownEditor
               value={content}
               onChange={setContent}
