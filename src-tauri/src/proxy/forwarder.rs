@@ -1879,7 +1879,15 @@ impl RequestForwarder {
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
-        log::info!("[{tag}/{source}] >>> 请求 URL: {url} (model={request_model})");
+        let thinking_summary = extract_thinking_summary(&filtered_body);
+        if thinking_summary.is_empty() {
+            log::info!("[{tag}/{source}] >>> 请求 URL: {url} (model={request_model})");
+        } else {
+            let thinking_summary = thinking_summary.join(", ");
+            log::info!(
+                "[{tag}/{source}] >>> 请求 URL: {url} (model={request_model}, {thinking_summary})"
+            );
+        }
         if log::log_enabled!(log::Level::Debug) {
             if let Ok(body_str) = serde_json::to_string(&filtered_body) {
                 log::debug!(
