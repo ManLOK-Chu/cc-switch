@@ -106,6 +106,28 @@ pub struct ModelStats {
     pub output_tokens: u64,
 }
 
+/// 会话统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStats {
+    pub session_id: String,
+    pub app_type: String,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub total_cost: String,
+    pub success_rate: f32,
+    pub avg_latency_ms: u64,
+    pub last_active_at: i64,
+    pub last_provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_provider_name: Option<String>,
+    pub last_model: String,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub fresh_input: u64,
+    pub output_tokens: u64,
+}
+
 /// 请求日志过滤器
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1520,6 +1542,160 @@ impl Database {
         Ok(stats)
     }
 
+    /// 获取会话统计（原型：隐藏单请求 session 以降低生成型 UUID 噪音）
+    pub fn get_session_stats(
+        &self,
+        start_date: Option<i64>,
+        end_date: Option<i64>,
+        app_type: Option<&str>,
+        provider_name: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Vec<SessionStats>, AppError> {
+        let conn = lock_conn!(self.conn);
+
+        let mut conditions = vec![
+            effective_usage_log_filter("l"),
+            "l.session_id IS NOT NULL".to_string(),
+            "l.session_id != ''".to_string(),
+        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(start) = start_date {
+            conditions.push("l.created_at >= ?".to_string());
+            params.push(Box::new(start));
+        }
+        if let Some(end) = end_date {
+            conditions.push("l.created_at <= ?".to_string());
+            params.push(Box::new(end));
+        }
+        if let Some(at) = app_type {
+            conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
+            params.push(Box::new(at.to_string()));
+        }
+        push_provider_model_filters(&mut conditions, &mut params, "l", "p", provider_name, model);
+
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+        let join = providers_join("l", "p");
+        let latest_join = providers_join("latest", "latest_p");
+        let provider_name_expr = provider_name_coalesce("l", "p");
+        let latest_provider_name_expr = provider_name_coalesce("latest", "latest_p");
+        let effective_model_expr = effective_model_sql("l");
+        let fresh_input_expr = fresh_input_sql("l");
+
+        let sql = format!(
+            "WITH filtered AS (
+                SELECT
+                    l.request_id,
+                    l.session_id,
+                    l.app_type,
+                    l.provider_id,
+                    {provider_name_expr} AS provider_name,
+                    l.model,
+                    {effective_model_expr} AS effective_model,
+                    l.output_tokens,
+                    l.cache_read_tokens,
+                    l.cache_creation_tokens,
+                    CAST(l.total_cost_usd AS REAL) AS total_cost,
+                    l.latency_ms,
+                    l.status_code,
+                    l.created_at,
+                    {fresh_input_expr} AS fresh_input
+                FROM proxy_request_logs l
+                {join}
+                {where_clause}
+            ), session_agg AS (
+                SELECT
+                    session_id,
+                    MAX(created_at) AS last_active_at,
+                    COUNT(*) AS request_count,
+                    COALESCE(SUM(fresh_input), 0) AS fresh_input,
+                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                    COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                    COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                    COALESCE(SUM(total_cost), 0) AS total_cost,
+                    COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
+                    COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0) AS success_count
+                FROM filtered
+                GROUP BY session_id
+                HAVING COUNT(*) > 1
+            ), latest AS (
+                SELECT f.*
+                FROM filtered f
+                INNER JOIN session_agg s
+                    ON s.session_id = f.session_id
+                   AND s.last_active_at = f.created_at
+                WHERE f.request_id = (
+                    SELECT f2.request_id
+                    FROM filtered f2
+                    WHERE f2.session_id = f.session_id
+                      AND f2.created_at = f.created_at
+                    ORDER BY f2.request_id DESC
+                    LIMIT 1
+                )
+            )
+            SELECT
+                s.session_id,
+                latest.app_type,
+                s.request_count,
+                s.fresh_input,
+                s.output_tokens,
+                s.cache_read_tokens,
+                s.cache_creation_tokens,
+                s.total_cost,
+                s.avg_latency_ms,
+                s.success_count,
+                s.last_active_at,
+                latest.provider_id,
+                {latest_provider_name_expr} AS last_provider_name,
+                latest.model
+            FROM session_agg s
+            INNER JOIN latest ON latest.session_id = s.session_id
+            {latest_join}
+            ORDER BY s.last_active_at DESC"
+        );
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            let request_count: i64 = row.get(2)?;
+            let fresh_input: i64 = row.get(3)?;
+            let output_tokens: i64 = row.get(4)?;
+            let cache_read_tokens: i64 = row.get(5)?;
+            let cache_creation_tokens: i64 = row.get(6)?;
+            let total_cost: f64 = row.get(7)?;
+            let avg_latency_ms: f64 = row.get(8)?;
+            let success_count: i64 = row.get(9)?;
+            let total_tokens =
+                fresh_input + output_tokens + cache_read_tokens + cache_creation_tokens;
+            let success_rate = if request_count > 0 {
+                (success_count as f32 / request_count as f32) * 100.0
+            } else {
+                0.0
+            };
+
+            Ok(SessionStats {
+                session_id: row.get(0)?,
+                app_type: row.get(1)?,
+                request_count: request_count as u64,
+                total_tokens: total_tokens as u64,
+                total_cost: format!("{total_cost:.4}"),
+                success_rate,
+                avg_latency_ms: avg_latency_ms.round() as u64,
+                last_active_at: row.get(10)?,
+                last_provider_id: row.get(11)?,
+                last_provider_name: row.get(12)?,
+                last_model: row.get(13)?,
+                total_cache_read_tokens: cache_read_tokens as u64,
+                total_cache_creation_tokens: cache_creation_tokens as u64,
+                fresh_input: fresh_input as u64,
+                output_tokens: output_tokens as u64,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(format!("获取会话统计失败: {e}")))
+    }
+
     /// 获取请求日志列表（分页）
     pub fn get_request_logs(
         &self,
@@ -2437,6 +2613,238 @@ mod tests {
             created_at: 1000,
         };
         assert!(has_matching_proxy_usage_log(&conn, &key)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_session_stats_aggregates_and_orders_by_last_active() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, created_at) VALUES (?1, ?2, ?3, '{}', ?4)",
+                params!["provider-a", "claude", "Provider A", 1_i64],
+            )?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, created_at) VALUES (?1, ?2, ?3, '{}', ?4)",
+                params!["provider-b", "claude", "Provider B", 1_i64],
+            )?;
+
+            for (
+                request_id,
+                session_id,
+                provider_id,
+                model,
+                input,
+                output,
+                cache_read,
+                cache_creation,
+                cost,
+                latency,
+                status,
+                created_at,
+            ) in [
+                (
+                    "req-1",
+                    "session-alpha",
+                    "provider-a",
+                    "claude-sonnet",
+                    100_i64,
+                    40_i64,
+                    10_i64,
+                    5_i64,
+                    "0.0100",
+                    100_i64,
+                    200_i64,
+                    1_000_i64,
+                ),
+                (
+                    "req-2",
+                    "session-alpha",
+                    "provider-b",
+                    "claude-opus",
+                    200_i64,
+                    60_i64,
+                    20_i64,
+                    10_i64,
+                    "0.0200",
+                    300_i64,
+                    500_i64,
+                    1_100_i64,
+                ),
+                (
+                    "req-3",
+                    "session-beta",
+                    "provider-a",
+                    "claude-haiku",
+                    50_i64,
+                    20_i64,
+                    0_i64,
+                    0_i64,
+                    "0.0050",
+                    80_i64,
+                    200_i64,
+                    1_200_i64,
+                ),
+                (
+                    "req-4",
+                    "session-beta",
+                    "provider-a",
+                    "claude-haiku",
+                    70_i64,
+                    25_i64,
+                    0_i64,
+                    0_i64,
+                    "0.0060",
+                    120_i64,
+                    200_i64,
+                    1_300_i64,
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO proxy_request_logs (
+                        request_id, provider_id, app_type, model, request_model, pricing_model,
+                        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                        input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
+                        latency_ms, first_token_ms, status_code, error_message, session_id,
+                        provider_type, is_streaming, cost_multiplier, created_at, data_source
+                    ) VALUES (?1, ?2, 'claude', ?3, ?3, ?3, ?4, ?5, ?6, ?7, '0', '0', '0', '0', ?8, ?9, NULL, ?10, NULL, ?11, 'claude', 0, '1.0', ?12, 'proxy')",
+                    params![request_id, provider_id, model, input, output, cache_read, cache_creation, cost, latency, status, session_id, created_at],
+                )?;
+            }
+        }
+
+        let stats = db.get_session_stats(None, None, None, None, None)?;
+
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].session_id, "session-beta");
+        assert_eq!(stats[0].request_count, 2);
+        assert_eq!(stats[0].last_active_at, 1_300);
+        assert_eq!(stats[0].last_provider_id, "provider-a");
+        assert_eq!(stats[0].last_provider_name.as_deref(), Some("Provider A"));
+        assert_eq!(stats[0].last_model, "claude-haiku");
+        assert_eq!(stats[0].fresh_input, 120);
+        assert_eq!(stats[0].output_tokens, 45);
+        assert_eq!(stats[0].total_cache_read_tokens, 0);
+        assert_eq!(stats[0].total_cache_creation_tokens, 0);
+        assert_eq!(stats[0].total_tokens, 165);
+        assert_eq!(stats[0].total_cost, "0.0110");
+        assert_eq!(stats[0].success_rate, 100.0);
+        assert_eq!(stats[0].avg_latency_ms, 100);
+
+        assert_eq!(stats[1].session_id, "session-alpha");
+        assert_eq!(stats[1].request_count, 2);
+        assert_eq!(stats[1].last_active_at, 1_100);
+        assert_eq!(stats[1].last_provider_id, "provider-b");
+        assert_eq!(stats[1].last_provider_name.as_deref(), Some("Provider B"));
+        assert_eq!(stats[1].last_model, "claude-opus");
+        assert_eq!(stats[1].fresh_input, 300);
+        assert_eq!(stats[1].output_tokens, 100);
+        assert_eq!(stats[1].total_cache_read_tokens, 30);
+        assert_eq!(stats[1].total_cache_creation_tokens, 15);
+        assert_eq!(stats[1].total_tokens, 445);
+        assert_eq!(stats[1].total_cost, "0.0300");
+        assert_eq!(stats[1].success_rate, 50.0);
+        assert_eq!(stats[1].avg_latency_ms, 200);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_session_stats_filters_and_hides_one_off_sessions() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, created_at) VALUES (?1, ?2, ?3, '{}', ?4)",
+                params!["provider-a", "claude", "Provider A", 1_i64],
+            )?;
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, created_at) VALUES (?1, ?2, ?3, '{}', ?4)",
+                params!["provider-b", "codex", "Provider B", 1_i64],
+            )?;
+
+            for (request_id, app_type, session_id, provider_id, model, created_at) in [
+                (
+                    "req-1",
+                    "claude",
+                    Some("session-kept"),
+                    "provider-a",
+                    "model-a",
+                    1_000_i64,
+                ),
+                (
+                    "req-2",
+                    "claude",
+                    Some("session-kept"),
+                    "provider-a",
+                    "model-a",
+                    1_100_i64,
+                ),
+                (
+                    "req-3",
+                    "claude",
+                    Some("session-one-off"),
+                    "provider-a",
+                    "model-a",
+                    1_200_i64,
+                ),
+                ("req-4", "claude", None, "provider-a", "model-a", 1_300_i64),
+                (
+                    "req-5",
+                    "codex",
+                    Some("session-codex"),
+                    "provider-b",
+                    "model-b",
+                    1_400_i64,
+                ),
+                (
+                    "req-6",
+                    "codex",
+                    Some("session-codex"),
+                    "provider-b",
+                    "model-b",
+                    1_500_i64,
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO proxy_request_logs (
+                        request_id, provider_id, app_type, model, request_model, pricing_model,
+                        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                        input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
+                        latency_ms, first_token_ms, status_code, error_message, session_id,
+                        provider_type, is_streaming, cost_multiplier, created_at, data_source
+                    ) VALUES (?1, ?2, ?3, ?4, ?4, ?4, 10, 5, 0, 0, '0', '0', '0', '0', '0.0010', 50, NULL, 200, NULL, ?5, ?3, 0, '1.0', ?6, 'proxy')",
+                    params![request_id, provider_id, app_type, model, session_id, created_at],
+                )?;
+            }
+        }
+
+        let all = db.get_session_stats(None, None, None, None, None)?;
+        assert_eq!(
+            all.iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-codex", "session-kept"]
+        );
+
+        let claude = db.get_session_stats(None, None, Some("claude"), None, None)?;
+        assert_eq!(claude.len(), 1);
+        assert_eq!(claude[0].session_id, "session-kept");
+
+        let filtered_by_provider =
+            db.get_session_stats(None, None, None, Some("Provider B"), None)?;
+        assert_eq!(filtered_by_provider.len(), 1);
+        assert_eq!(filtered_by_provider[0].session_id, "session-codex");
+
+        let filtered_by_model = db.get_session_stats(None, None, None, None, Some("model-a"))?;
+        assert_eq!(filtered_by_model.len(), 1);
+        assert_eq!(filtered_by_model[0].session_id, "session-kept");
+
+        let filtered_by_time = db.get_session_stats(Some(1_350), Some(1_600), None, None, None)?;
+        assert_eq!(filtered_by_time.len(), 1);
+        assert_eq!(filtered_by_time[0].session_id, "session-codex");
 
         Ok(())
     }

@@ -125,6 +125,24 @@ export const usageKeys = {
       filters?.providerName ?? null,
       filters?.model ?? null,
     ] as const,
+  sessionStats: (
+    preset: UsageRangeSelection["preset"],
+    customStartDate: number | undefined,
+    customEndDate: number | undefined,
+    filters?: UsageScopeFilters,
+    liveEndTime?: boolean,
+  ) =>
+    [
+      ...usageKeys.all,
+      "session-stats",
+      preset,
+      customStartDate ?? 0,
+      customEndDate ?? 0,
+      liveEndTime ?? false,
+      filters?.appType ?? null,
+      filters?.providerName ?? null,
+      filters?.model ?? null,
+    ] as const,
   logs: (key: RequestLogsKey, page: number, pageSize: number) =>
     [
       ...usageKeys.all,
@@ -290,6 +308,35 @@ export function useModelStats(
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getModelStats(
+        startDate,
+        endDate,
+        effective.appType,
+        effective.providerName,
+        effective.model,
+      );
+    },
+    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
+  });
+}
+
+export function useSessionStats(
+  range: UsageRangeSelection,
+  filters?: UsageScopeFilters,
+  options?: UsageQueryOptions,
+) {
+  const effective = normalizeScopeFilters(filters);
+  return useQuery({
+    queryKey: usageKeys.sessionStats(
+      range.preset,
+      range.customStartDate,
+      range.customEndDate,
+      effective,
+      range.liveEndTime,
+    ),
+    queryFn: () => {
+      const { startDate, endDate } = resolveUsageRange(range);
+      return usageApi.getSessionStats(
         startDate,
         endDate,
         effective.appType,

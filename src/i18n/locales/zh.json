@@ -1559,7 +1559,20 @@
     "cacheReadCostPerMillion": "缓存读取成本 (每百万 tokens, USD)",
     "cacheCreationCostPerMillion": "缓存写入成本 (每百万 tokens, USD)",
     "copyPricing": "复制定价",
-    "pricingCopied": "定价已复制"
+    "pricingCopied": "定价已复制",
+    "sessions": {
+      "title": "会话",
+      "lastActive": "最近活跃",
+      "sessionId": "会话 ID",
+      "recentProvider": "最近 Provider",
+      "providerMarker": "Provider 标记",
+      "noMarker": "未标记",
+      "markedAs": "已标记为 {{provider}}",
+      "empty": "暂无会话统计",
+      "singleRequestHidden": "当前原型默认隐藏单请求会话。",
+      "prototypeDisclaimer": "Provider 标记仅用于原型展示，不影响路由。",
+      "loadError": "加载会话统计失败"
+    }
   },
   "usageScript": {
     "title": "配置用量查询",

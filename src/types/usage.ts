@@ -123,6 +123,24 @@ export interface ModelStats {
   outputTokens: number;
 }
 
+export interface SessionStats {
+  sessionId: string;
+  appType: string;
+  requestCount: number;
+  totalTokens: number;
+  totalCost: string;
+  successRate: number;
+  avgLatencyMs: number;
+  lastActiveAt: number;
+  lastProviderId: string;
+  lastProviderName?: string;
+  lastModel: string;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  freshInput: number;
+  outputTokens: number;
+}
+
 export interface LogFilters {
   appType?: string;
   providerName?: string;

@@ -5,6 +5,7 @@ import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
+import { SessionStatsTable } from "./SessionStatsTable";
 import {
   KNOWN_APP_TYPES,
   type AppType,
@@ -19,6 +20,7 @@ import {
   RefreshCw,
   Coins,
   LayoutGrid,
+  Network,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import {
@@ -326,6 +328,10 @@ export function UsageDashboard() {
                 <BarChart3 className="h-4 w-4" />
                 {t("usage.modelStats")}
               </TabsTrigger>
+              <TabsTrigger value="sessions" className="gap-2">
+                <Network className="h-4 w-4" />
+                {t("usage.sessions.title", "会话")}
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -358,6 +364,16 @@ export function UsageDashboard() {
 
             <TabsContent value="models" className="mt-0">
               <ModelStatsTable
+                range={range}
+                appType={appType}
+                providerName={providerName}
+                model={model}
+                refreshIntervalMs={refreshIntervalMs}
+              />
+            </TabsContent>
+
+            <TabsContent value="sessions" className="mt-0">
+              <SessionStatsTable
                 range={range}
                 appType={appType}
                 providerName={providerName}

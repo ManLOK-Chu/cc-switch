@@ -100,6 +100,25 @@ pub fn get_model_stats(
     )
 }
 
+/// 获取会话统计
+#[tauri::command]
+pub fn get_session_stats(
+    state: State<'_, AppState>,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<SessionStats>, AppError> {
+    state.db.get_session_stats(
+        start_date,
+        end_date,
+        app_type.as_deref(),
+        provider_name.as_deref(),
+        model.as_deref(),
+    )
+}
+
 /// 获取请求日志列表
 #[tauri::command]
 pub fn get_request_logs(

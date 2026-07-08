@@ -1559,7 +1559,20 @@
     "cacheReadCostPerMillion": "キャッシュ読み取りコスト（100万トークンあたり、USD）",
     "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）",
     "copyPricing": "価格設定をコピー",
-    "pricingCopied": "価格設定をコピーしました"
+    "pricingCopied": "価格設定をコピーしました",
+    "sessions": {
+      "title": "セッション",
+      "lastActive": "最終アクティブ",
+      "sessionId": "セッション ID",
+      "recentProvider": "直近の Provider",
+      "providerMarker": "Provider マーカー",
+      "noMarker": "未設定",
+      "markedAs": "{{provider}} としてマーク済み",
+      "empty": "セッション統計はまだありません",
+      "singleRequestHidden": "このプロトタイプでは単一リクエストのセッションを既定で非表示にします。",
+      "prototypeDisclaimer": "Provider マーカーはプロトタイプ表示専用で、ルーティングには影響しません。",
+      "loadError": "セッション統計の読み込みに失敗しました"
+    }
   },
   "usageScript": {
     "title": "利用状況を設定",

@@ -1403,6 +1403,7 @@ pub fn run() {
             commands::get_usage_trends,
             commands::get_provider_stats,
             commands::get_model_stats,
+            commands::get_session_stats,
             commands::get_request_logs,
             commands::get_request_detail,
             commands::get_model_pricing,

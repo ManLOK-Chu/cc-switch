@@ -1559,7 +1559,20 @@
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
     "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)",
     "copyPricing": "Copy Pricing",
-    "pricingCopied": "Pricing copied"
+    "pricingCopied": "Pricing copied",
+    "sessions": {
+      "title": "Sessions",
+      "lastActive": "Last active",
+      "sessionId": "Session ID",
+      "recentProvider": "Recent Provider",
+      "providerMarker": "Provider marker",
+      "noMarker": "No marker",
+      "markedAs": "Marked as {{provider}}",
+      "empty": "No session statistics yet",
+      "singleRequestHidden": "This prototype hides single-request sessions by default.",
+      "prototypeDisclaimer": "Provider markers are prototype-only and do not affect routing.",
+      "loadError": "Failed to load session statistics"
+    }
   },
   "usageScript": {
     "title": "Configure Usage Query",

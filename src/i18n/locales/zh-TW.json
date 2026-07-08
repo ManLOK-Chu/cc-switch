@@ -1529,7 +1529,20 @@
     "modelsDevTruncated": "僅顯示前 {{shown}} 條，共 {{total}} 條結果，請縮小搜尋範圍",
     "modelsDevDefaultHint": "預設展示最新發布的 {{shown}} 個模型（共 {{total}} 個），輸入關鍵字可全量搜尋",
     "cacheReadCostPerMillion": "快取讀取成本 (每百萬 tokens, USD)",
-    "cacheCreationCostPerMillion": "快取寫入成本 (每百萬 tokens, USD)"
+    "cacheCreationCostPerMillion": "快取寫入成本 (每百萬 tokens, USD)",
+    "sessions": {
+      "title": "會話",
+      "lastActive": "最近活躍",
+      "sessionId": "會話 ID",
+      "recentProvider": "最近 Provider",
+      "providerMarker": "Provider 標記",
+      "noMarker": "未標記",
+      "markedAs": "已標記為 {{provider}}",
+      "empty": "暫無會話統計",
+      "singleRequestHidden": "目前原型預設隱藏單次請求會話。",
+      "prototypeDisclaimer": "Provider 標記僅用於原型展示，不影響路由。",
+      "loadError": "載入會話統計失敗"
+    }
   },
   "usageScript": {
     "title": "設定用量查詢",

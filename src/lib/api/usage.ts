@@ -5,6 +5,7 @@ import type {
   DailyStats,
   ProviderStats,
   ModelStats,
+  SessionStats,
   RequestLog,
   LogFilters,
   ModelPricing,
@@ -118,6 +119,22 @@ export const usageApi = {
     model?: string,
   ): Promise<ModelStats[]> => {
     return invoke("get_model_stats", {
+      startDate,
+      endDate,
+      appType,
+      providerName,
+      model,
+    });
+  },
+
+  getSessionStats: async (
+    startDate?: number,
+    endDate?: number,
+    appType?: string,
+    providerName?: string,
+    model?: string,
+  ): Promise<SessionStats[]> => {
+    return invoke("get_session_stats", {
       startDate,
       endDate,
       appType,
