@@ -525,6 +525,28 @@ pub fn parse_custom_user_agent(
     }
 }
 
+/// 从自定义 User-Agent 推导配套的 Codex `originator` 头。
+///
+/// 官方 Codex 客户端会成对发送 `originator: codex_cli_rs`（或 `codex_vscode`）与
+/// `User-Agent: codex_cli_rs/…`。部分上游按这套身份做模型放行/白名单，只带 UA 缺
+/// originator 会被判为非官方客户端并返回 `404 Model not found`（见
+/// <https://github.com/Wei-Shaw/sub2api/issues/3983>）。因此当供应商自定义 UA 是
+/// Codex 客户端标识时，转发路径补上与 UA 产品名一致的 originator。
+///
+/// 仅匹配 UA 的产品名前缀 `^(codex_cli_rs|codex_vscode)/`（须紧跟 `/` 才算完整产品名，
+/// 避免 `prefix_codex_cli_rs/…` 误判）；其他 UA（如 `claude-cli/…`）返回 `None`，不注入。
+pub fn codex_originator_for_user_agent(ua: &HeaderValue) -> Option<HeaderValue> {
+    let s = ua.to_str().ok()?;
+    for token in ["codex_cli_rs", "codex_vscode"] {
+        if s.strip_prefix(token)
+            .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return Some(HeaderValue::from_static(token));
+        }
+    }
+    None
+}
+
 impl ProviderMeta {
     /// Codex OAuth FAST mode 是否启用。默认关闭，因为 `service_tier="priority"`
     /// 会按更高速率消耗 ChatGPT 订阅配额，用户需显式开启以换取更低延迟。
@@ -1523,5 +1545,50 @@ mod tests {
             p.resolve_usage_credentials(&AppType::Claude),
             (String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn codex_originator_matches_codex_cli_user_agent() {
+        let ua = super::HeaderValue::from_static(
+            "codex_cli_rs/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color",
+        );
+        assert_eq!(
+            super::codex_originator_for_user_agent(&ua),
+            Some(super::HeaderValue::from_static("codex_cli_rs")),
+        );
+    }
+
+    #[test]
+    fn codex_originator_matches_codex_vscode_user_agent() {
+        let ua = super::HeaderValue::from_static("codex_vscode/1.0.0 (macOS)");
+        assert_eq!(
+            super::codex_originator_for_user_agent(&ua),
+            Some(super::HeaderValue::from_static("codex_vscode")),
+        );
+    }
+
+    #[test]
+    fn codex_originator_ignores_non_codex_user_agent() {
+        for ua in [
+            "claude-cli/2.1.161 (external, cli)",
+            "Kilo-Code/1.0",
+            "Mozilla/5.0",
+        ] {
+            let hv = super::HeaderValue::from_static(ua);
+            assert_eq!(super::codex_originator_for_user_agent(&hv), None, "ua={ua}");
+        }
+    }
+
+    #[test]
+    fn codex_originator_requires_full_product_token() {
+        // 产品名后须紧跟 `/`，否则不视为 codex 客户端标识（防前缀误判）。
+        for ua in [
+            "codex_cli_rs",
+            "codex_cli_rs_extra/1.0",
+            "prefix_codex_cli_rs/1.0",
+        ] {
+            let hv = super::HeaderValue::from_static(ua);
+            assert_eq!(super::codex_originator_for_user_agent(&hv), None, "ua={ua}");
+        }
     }
 }

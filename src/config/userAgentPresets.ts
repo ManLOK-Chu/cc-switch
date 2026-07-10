@@ -22,6 +22,21 @@ export interface UserAgentPreset {
   label?: string;
 }
 
+/**
+ * Codex CLI 动态预设模板。与后端 `proxy/providers/codex.rs` 的官方客户端识别
+ * 正则（`codex_cli_rs/...`）同名，最贴近真实 Codex CLI 客户端。
+ *
+ * 版本号与 `xterm-256color` 终端后缀为静态字面量；`{osName}/{osVersion}/{arch}`
+ * 由 `resolvePreset` 在点击/新建时替换为当前系统真实值。
+ *
+ * 单独导出以便 ProviderForm 在新建 Codex 供应商时复用同一模板，避免多处硬编码。
+ */
+export const CODEX_CLI_DYNAMIC_UA =
+  "codex_cli_rs/0.144.1 ({osName} {osVersion}; {arch}) xterm-256color";
+
+/** Codex CLI 动态预设的下拉标签，同时用于新建 Codex 时定位该预设。 */
+export const CODEX_CLI_DYNAMIC_UA_LABEL = "codex-cli (dynamic)";
+
 export const USER_AGENT_PRESETS: readonly UserAgentPreset[] = [
   { template: "claude-cli/2.1.161 (external, cli)" },
   { template: "claude-cli/2.1.161" },
@@ -29,8 +44,7 @@ export const USER_AGENT_PRESETS: readonly UserAgentPreset[] = [
   { template: "claude-code/0.1.0" },
   { template: "Kilo-Code/1.0" },
   {
-    template:
-      "codex-tui/0.142.0 ({osName} {osVersion}; {arch}) Apple_Terminal/455 (codex-tui; 0.142.0)",
-    label: "codex-tui (dynamic)",
+    template: CODEX_CLI_DYNAMIC_UA,
+    label: CODEX_CLI_DYNAMIC_UA_LABEL,
   },
 ];
