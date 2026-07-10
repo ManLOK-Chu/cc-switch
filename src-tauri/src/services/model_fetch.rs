@@ -66,6 +66,12 @@ pub async fn fetch_models(
     let client = crate::proxy::http_client::get();
     let mut last_err: Option<String> = None;
 
+    // 当自定义 UA 是 Codex 客户端标识时，配套发送 originator，与转发路径身份一致，
+    // 避免只带 UA 缺 originator 被上游按非官方身份 404（见 Wei-Shaw/sub2api#3983）。
+    let codex_originator = user_agent
+        .as_ref()
+        .and_then(crate::provider::codex_originator_for_user_agent);
+
     for url in &candidates {
         log::debug!("[ModelFetch] Trying endpoint: {url}");
         let mut request = client
@@ -76,6 +82,9 @@ pub async fn fetch_models(
         // 与转发 / 检测路径共用同一 UA，避免"代理可用但取模型失败"。
         if let Some(ua) = &user_agent {
             request = request.header(USER_AGENT, ua.clone());
+        }
+        if let Some(orig) = &codex_originator {
+            request = request.header("originator", orig.clone());
         }
         let response = match request.send().await {
             Ok(r) => r,

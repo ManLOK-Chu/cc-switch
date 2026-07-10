@@ -66,6 +66,8 @@ import {
 } from "@/utils/providerConfigUtils";
 import { isNonNegativeDecimalString } from "@/types/usage";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
+import { CODEX_CLI_DYNAMIC_UA } from "@/config/userAgentPresets";
+import { resolvePreset } from "@/lib/userAgentPreset";
 import CodexConfigEditor from "./CodexConfigEditor";
 import { CommonConfigEditor } from "./CommonConfigEditor";
 import GeminiConfigEditor from "./GeminiConfigEditor";
@@ -688,6 +690,32 @@ function ProviderFormFull({
         preset,
       }));
   }, [appId]);
+
+  const selectedProviderPreset = presetEntries.find(
+    (entry) => entry.id === selectedPresetId,
+  )?.preset;
+  const isCodexUserAgentDefault =
+    appId === "codex" ||
+    (appId === "claude" &&
+      selectedProviderPreset != null &&
+      "providerType" in selectedProviderPreset &&
+      selectedProviderPreset.providerType === "codex_oauth");
+
+  // 新建 Codex 供应商，或在 Claude 表单选择 Codex OAuth 预设时，默认填充 Codex CLI
+  // 动态 User-Agent（解析后的真实系统值）。仅新建且用户尚未输入时填充：编辑态不触发；
+  // 异步回填前若用户已输入，用函数式更新的 `prev === ""` 判断避免覆盖；组件卸载/
+  // 依赖变更用 cancelled 兜底。
+  useEffect(() => {
+    if (!isCodexUserAgentDefault || initialData) return;
+    let cancelled = false;
+    void resolvePreset(CODEX_CLI_DYNAMIC_UA).then((resolved) => {
+      if (cancelled) return;
+      setCustomUserAgent((prev) => (prev === "" ? resolved : prev));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialData, isCodexUserAgentDefault]);
 
   const {
     templateValues,

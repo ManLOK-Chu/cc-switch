@@ -16,10 +16,21 @@ describe("USER_AGENT_PRESETS", () => {
     }
   });
 
-  it("codex-tui preset has osVersion and arch placeholders", () => {
-    const codex = USER_AGENT_PRESETS.find((p) => p.label?.includes("codex-tui"));
+  it("codex-cli preset has the expected label, template and placeholders", () => {
+    const codex = USER_AGENT_PRESETS.find((p) =>
+      p.label?.includes("codex-cli"),
+    );
     expect(codex).toBeDefined();
+    expect(codex!.label).toBe("codex-cli (dynamic)");
+    expect(codex!.template).toBe(
+      "codex_cli_rs/0.144.1 ({osName} {osVersion}; {arch}) xterm-256color",
+    );
+    expect(codex!.template).toContain("{osName}");
     expect(codex!.template).toContain("{osVersion}");
     expect(codex!.template).toContain("{arch}");
+    expect(codex!.template).toContain("xterm-256color");
+    // 旧的 codex-tui / Apple_Terminal 格式不应再出现。
+    expect(codex!.template).not.toContain("codex-tui");
+    expect(codex!.template).not.toContain("Apple_Terminal");
   });
 });

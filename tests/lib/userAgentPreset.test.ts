@@ -31,9 +31,11 @@ describe("resolvePreset", () => {
     mockArch.mockResolvedValue("aarch64");
 
     const result = await resolvePreset(
-      "codex-tui/0.142.0 ({osName} {osVersion}; {arch})"
+      "codex_cli_rs/0.144.1 ({osName} {osVersion}; {arch}) xterm-256color",
     );
-    expect(result).toBe("codex-tui/0.142.0 (Mac OS 15.1.0; arm64)");
+    expect(result).toBe(
+      "codex_cli_rs/0.144.1 (Mac OS 15.1.0; arm64) xterm-256color",
+    );
   });
 
   it("resolves {osName} to Windows on Windows", async () => {

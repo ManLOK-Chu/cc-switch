@@ -1564,6 +1564,14 @@ impl RequestForwarder {
                 .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
         };
 
+        // 当自定义 UA 是 Codex 客户端标识（codex_cli_rs/… 等）时，补上配套的
+        // `originator` 头，与官方 Codex CLI 成对身份一致，避免只带 UA 缺 originator
+        // 被上游按非官方身份 404（见 Wei-Shaw/sub2api#3983）。非 codex UA 返回 None。
+        let codex_originator = custom_user_agent
+            .as_ref()
+            .and_then(crate::provider::codex_originator_for_user_agent);
+        prefer_codex_originator(&mut auth_headers, codex_originator.as_ref());
+
         // --- Copilot 优化器：动态 header 注入 ---
         if let Some((ref classification, ref det_request_id, ref interaction_id)) =
             copilot_optimization
@@ -1661,6 +1669,11 @@ impl RequestForwarder {
         let mut saw_user_agent = false;
         let mut saw_anthropic_beta = false;
         let mut saw_anthropic_version = false;
+        // 若认证头已带 originator（CodexOAuth 注入 `cc-switch`），视为已处理，避免与
+        // codex 自定义 UA 的 originator 注入重复；也不覆盖已有 OAuth 身份。
+        let mut saw_originator = auth_headers
+            .iter()
+            .any(|(name, _)| name.as_str().eq_ignore_ascii_case("originator"));
 
         for (key, value) in headers {
             let key_str = key.as_str();
@@ -1752,6 +1765,22 @@ impl RequestForwarder {
                 continue;
             }
 
+            // --- originator: 仅当 codex 自定义 UA 生效时接管（保持客户端原始位置）；
+            //     其余情况（无 codex UA / OAuth 已注入）不介入，客户端值照常透传。 ---
+            if !is_copilot
+                && codex_originator.is_some()
+                && key_str.eq_ignore_ascii_case("originator")
+            {
+                if !saw_originator {
+                    saw_originator = true;
+                    if let Some(ref orig) = codex_originator {
+                        ordered_headers
+                            .append(http::HeaderName::from_static("originator"), orig.clone());
+                    }
+                }
+                continue;
+            }
+
             // --- anthropic-beta — 用重建值替换（确保含 claude-code 标记） ---
             if key_str.eq_ignore_ascii_case("anthropic-beta") {
                 if !saw_anthropic_beta {
@@ -1804,6 +1833,13 @@ impl RequestForwarder {
         if !saw_user_agent {
             if let Some(ref ua) = custom_user_agent {
                 ordered_headers.append(http::header::USER_AGENT, ua.clone());
+            }
+        }
+
+        // 客户端未发 originator 时，补上与 codex 自定义 UA 配套的 originator。
+        if !saw_originator {
+            if let Some(ref orig) = codex_originator {
+                ordered_headers.append(http::HeaderName::from_static("originator"), orig.clone());
             }
         }
 
@@ -2725,6 +2761,22 @@ fn merge_json_override_inner(target: &mut Value, patch: &Value, is_top_level: bo
     }
 }
 
+fn prefer_codex_originator(
+    auth_headers: &mut [(http::HeaderName, http::HeaderValue)],
+    codex_originator: Option<&http::HeaderValue>,
+) {
+    let Some(codex_originator) = codex_originator else {
+        return;
+    };
+
+    for (name, value) in auth_headers.iter_mut() {
+        if name.as_str().eq_ignore_ascii_case("originator") {
+            *value = codex_originator.clone();
+            return;
+        }
+    }
+}
+
 fn apply_local_proxy_header_overrides(
     headers: &mut http::HeaderMap,
     overrides: Option<&LocalProxyRequestOverrides>,
@@ -2890,6 +2942,32 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn codex_custom_user_agent_overrides_oauth_originator() {
+        let mut auth_headers = vec![
+            (
+                http::HeaderName::from_static("authorization"),
+                HeaderValue::from_static("Bearer test-token"),
+            ),
+            (
+                http::HeaderName::from_static("originator"),
+                HeaderValue::from_static("cc-switch"),
+            ),
+        ];
+
+        prefer_codex_originator(
+            &mut auth_headers,
+            Some(&HeaderValue::from_static("codex_cli_rs")),
+        );
+
+        let originators: Vec<_> = auth_headers
+            .iter()
+            .filter(|(name, _)| name.as_str() == "originator")
+            .map(|(_, value)| value.to_str().unwrap())
+            .collect();
+        assert_eq!(originators, vec!["codex_cli_rs"]);
+    }
 
     fn test_provider_with_type(provider_type: Option<&str>) -> Provider {
         Provider {
