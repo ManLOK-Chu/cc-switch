@@ -65,6 +65,7 @@ pub async fn fetch_models(
     let candidates = build_models_url_candidates(base_url, is_full_url, models_url_override)?;
     let client = crate::proxy::http_client::get();
     let mut last_err: Option<String> = None;
+    let log_secrets = vec![api_key.to_string()];
 
     // 当自定义 UA 是 Codex 客户端标识时，配套发送 originator，与转发路径身份一致，
     // 避免只带 UA 缺 originator 被上游按非官方身份 404（见 Wei-Shaw/sub2api#3983）。
@@ -73,7 +74,10 @@ pub async fn fetch_models(
         .and_then(crate::provider::codex_originator_for_user_agent);
 
     for url in &candidates {
-        log::debug!("[ModelFetch] Trying endpoint: {url}");
+        log::debug!(
+            "[ModelFetch] Trying endpoint: {}",
+            crate::url_for_log_with_secrets(url, &log_secrets)
+        );
         let mut request = client
             .get(url)
             .header("Authorization", format!("Bearer {api_key}"))
