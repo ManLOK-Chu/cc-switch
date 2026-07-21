@@ -466,7 +466,7 @@ fn sync_to_app_dir_auto_creates_link() {
     let metadata = fs::symlink_metadata(&app_dir).expect("get metadata");
     let is_symlink = metadata.file_type().is_symlink();
     #[cfg(windows)]
-    let is_junction = junction::is_junction(&app_dir).unwrap_or(false);
+    let is_junction = junction::exists(&app_dir).unwrap_or(false);
     #[cfg(not(windows))]
     let is_junction = false;
     assert!(
