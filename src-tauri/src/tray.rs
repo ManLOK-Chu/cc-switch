@@ -27,6 +27,8 @@ const M_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_MONTHLY,
     crate::services::subscription::TIER_THIRTY_DAY,
 ];
+// Grok credit 额度的兜底窗口（重置距离能识别为周/月时归入 w/m 组）
+const CREDITS_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_CREDITS];
 const GEMINI_PRO_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_PRO];
 const GEMINI_FLASH_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FLASH];
 const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
@@ -35,6 +37,7 @@ const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("h", H_TIER_NAMES),
     ("w", W_TIER_NAMES),
     ("m", M_TIER_NAMES),
+    ("c", CREDITS_TIER_NAMES),
     ("p", GEMINI_PRO_TIER_NAMES),
     ("f", GEMINI_FLASH_TIER_NAMES),
     ("l", GEMINI_FLASH_LITE_TIER_NAMES),
@@ -737,7 +740,7 @@ pub fn create_tray_menu(
                         provider,
                     );
                 let label = if is_official_blocked {
-                    format!("{} \u{26D4}", &provider.name) // ⛔ emoji
+                    format!("{} \u{26D4}", provider.name) // ⛔ emoji
                 } else {
                     provider.name.clone()
                 };
@@ -1107,6 +1110,7 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
             let app_clone = app.clone();
             let state = app.state::<AppState>();
             let copilot_state = app.state::<CopilotAuthState>();
+            let xai_state = app.state::<crate::commands::XaiOAuthState>();
             let provider_id = current_id.clone();
             let app_str = app_type_str.to_string();
             script_futures.push(async move {
@@ -1114,6 +1118,7 @@ pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
                     app_clone,
                     state,
                     copilot_state,
+                    xai_state,
                     provider_id.clone(),
                     app_str,
                 )

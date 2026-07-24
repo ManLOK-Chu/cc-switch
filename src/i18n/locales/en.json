@@ -1513,7 +1513,8 @@
       "codex_db": "Codex DB",
       "codex_session": "Codex Session",
       "gemini_session": "Gemini Session",
-      "opencode_session": "OpenCode Session"
+      "opencode_session": "OpenCode Session",
+      "grok_session": "Grok Build Session"
     },
     "sessionSync": {
       "trigger": "Sync session logs",
@@ -3021,6 +3022,7 @@
     "geminiFlashLite": "Flash Lite",
     "weeklyLimit": "Weekly",
     "monthly": "Monthly",
+    "credits": "Credits",
     "copilotPremium": "Premium",
     "utilization": "{{value}}%",
     "resetsIn": "Resets in {{time}}",
