@@ -51,7 +51,7 @@ const CLAUDE_ONE_M_MARKER_FOR_CLIENT: &str = "[1M]";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClaudeTakeoverAuthPolicy {
     PreserveExistingOrAuthToken,
-    ManagedAccount,
+    ManagedAccount { keep_auth_token: bool },
 }
 
 #[derive(Clone)]
@@ -93,10 +93,19 @@ impl ProxyService {
         provider: &Provider,
     ) {
         let auth_policy = if provider.uses_managed_account_auth() {
-            // Codex / Copilot OAuth：代理转发时使用数据库中 Provider 的真实 token，
-            // 不依赖此占位符。使用 ANTHROPIC_AUTH_TOKEN（非 ANTHROPIC_API_KEY），
-            // 因为 Claude Code 通过检测 ANTHROPIC_AUTH_TOKEN 判断登录状态（#3784）。
-            ClaudeTakeoverAuthPolicy::ManagedAccount
+            // Codex 系（含仅凭 base_url 识别、无 provider_type meta 的）必须保留
+            // ANTHROPIC_AUTH_TOKEN 占位符：Claude Code 缺该键会弹登录提示（#3784）。
+            // Copilot 默认同样注入 AUTH_TOKEN 占位符：Claude Code（实测 2.1.220）
+            // 对 ANTHROPIC_API_KEY 会弹"是否使用该自定义 key"确认框且默认
+            // "No (recommended)"，按默认走后占位符被忽略、落入 Not logged in
+            // （并非 sk-ant-* 格式校验——headless 下占位符原样出站）；AUTH_TOKEN
+            // 作为网关 Bearer 被直接信任，零弹窗。仅当供应商表单显式选择了
+            // ANTHROPIC_API_KEY（meta.apiKeyField）时才保留 API_KEY 占位，以规避
+            // 与 /login 管理的 key 冲突（#1049）。
+            ClaudeTakeoverAuthPolicy::ManagedAccount {
+                keep_auth_token: !provider.is_github_copilot()
+                    || !provider.claude_uses_api_key_field(),
+            }
         } else {
             ClaudeTakeoverAuthPolicy::PreserveExistingOrAuthToken
         };
@@ -186,18 +195,30 @@ impl ProxyService {
                     );
                 }
             }
-            ClaudeTakeoverAuthPolicy::ManagedAccount => {
+            ClaudeTakeoverAuthPolicy::ManagedAccount { keep_auth_token } => {
                 for key in token_keys {
                     env.remove(key);
                 }
-                // 使用 ANTHROPIC_AUTH_TOKEN 而非 ANTHROPIC_API_KEY：
-                // Claude Code 通过检测 ANTHROPIC_AUTH_TOKEN 判断登录状态；
-                // 使用 ANTHROPIC_API_KEY 会导致 Claude Code 认为用户未登录。
-                // 代理转发时使用数据库中 Provider 的真实 token，不依赖此占位符。
-                env.insert(
-                    "ANTHROPIC_AUTH_TOKEN".to_string(),
-                    json!(PROXY_TOKEN_PLACEHOLDER),
-                );
+                // 只注入一个认证键：两者同时存在会触发 Claude Code 的
+                // "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set" 警告（#4919）。
+                // - Codex 系保留 AUTH_TOKEN：缺该键 Claude Code 会弹登录提示（#3784）。
+                //   无条件注入而非"已存在才保留"：热切换路径传入的是 provider
+                //   settings（预设不含该键），且旧版接管已把存量用户 live 中的键删光。
+                // - Copilot 默认 AUTH_TOKEN：API_KEY 占位符会触发 Claude Code 的
+                //   自定义 key 确认框（默认 "No (recommended)"），按默认走即
+                //   Not logged in；仅当表单显式选择了 ANTHROPIC_API_KEY 时才用
+                //   API_KEY 占位以规避 /login key 冲突（#1049）。
+                if keep_auth_token {
+                    env.insert(
+                        "ANTHROPIC_AUTH_TOKEN".to_string(),
+                        json!(PROXY_TOKEN_PLACEHOLDER),
+                    );
+                } else {
+                    env.insert(
+                        "ANTHROPIC_API_KEY".to_string(),
+                        json!(PROXY_TOKEN_PLACEHOLDER),
+                    );
+                }
             }
         }
     }
@@ -3349,7 +3370,7 @@ mod tests {
         );
         assert!(
             env.get("ANTHROPIC_API_KEY").is_none(),
-            "managed OAuth providers should not use ANTHROPIC_API_KEY"
+            "API_KEY placeholders trigger Claude Code's custom-key approval prompt (defaults to No), landing users in Not logged in"
         );
     }
 
@@ -3685,7 +3706,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_account_claude_takeover_copilot_injects_auth_token() {
+    fn managed_account_claude_takeover_copilot_defaults_to_auth_token() {
         let mut provider = Provider::with_id(
             "copilot".to_string(),
             "GitHub Copilot".to_string(),
@@ -3698,6 +3719,48 @@ mod tests {
         );
         provider.meta = Some(ProviderMeta {
             provider_type: Some("github_copilot".to_string()),
+            ..Default::default()
+        });
+
+        let mut live_config = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://stale.example.com",
+                "ANTHROPIC_AUTH_TOKEN": "stale-token",
+                "ANTHROPIC_API_KEY": "stale-key"
+            }
+        });
+        ProxyService::apply_claude_takeover_fields_for_provider(
+            &mut live_config,
+            "http://127.0.0.1:15721",
+            &provider,
+        );
+
+        let env = live_config
+            .get("env")
+            .and_then(|value| value.as_object())
+            .expect("env should exist");
+        // Default Copilot takeover injects AUTH_TOKEN: the API_KEY placeholder
+        // triggers Claude Code's custom-key approval prompt (defaults to
+        // "No (recommended)"), which lands users in "Not logged in".
+        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
+    }
+
+    #[test]
+    fn managed_account_claude_takeover_copilot_honors_api_key_field_choice() {
+        let mut provider = Provider::with_id(
+            "copilot".to_string(),
+            "GitHub Copilot".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.githubcopilot.com"
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some("github_copilot".to_string()),
+            api_key_field: Some("ANTHROPIC_API_KEY".to_string()),
             ..Default::default()
         });
 
@@ -3717,8 +3780,10 @@ mod tests {
             .get("env")
             .and_then(|value| value.as_object())
             .expect("env should exist");
-        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
-        assert_env_str(env, "ANTHROPIC_API_KEY", None);
+        // Explicit API-key-field choice keeps the API_KEY placeholder to avoid
+        // conflicting with the /login-managed key (#1049).
+        assert_env_str(env, "ANTHROPIC_API_KEY", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", None);
     }
 
     #[test]
