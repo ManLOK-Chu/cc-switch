@@ -1032,7 +1032,8 @@ fn parent_signatures_before(
         // 检测 session 终止事件
         if value.get("type").and_then(serde_json::Value::as_str) == Some("event_msg") {
             if let Some(payload) = value.get("payload") {
-                if payload.get("type").and_then(serde_json::Value::as_str) == Some("task_complete") {
+                if payload.get("type").and_then(serde_json::Value::as_str) == Some("task_complete")
+                {
                     session_completed = true;
                     completed_at = timestamp.or(max_timestamp);
                 }
