@@ -144,6 +144,10 @@ struct ParentTokenTimeline {
     events: Vec<TimestampedTokenSignature>,
     max_timestamp: Option<DateTime<Utc>>,
     has_token_without_timestamp: bool,
+    /// 父会话是否已完整终止 (有 task_complete 事件)
+    session_completed: bool,
+    /// 父会话终止时的时间戳
+    completed_at: Option<DateTime<Utc>>,
 }
 
 impl ParentTokenTimeline {
@@ -158,6 +162,25 @@ impl ParentTokenTimeline {
                 parent_path.display()
             ));
         }
+
+        // 如果父会话已完整终止,允许使用其完整 token 历史
+        if self.session_completed {
+            if let Some(completed_at) = self.completed_at {
+                // 允许子会话 fork 时间在父会话结束后的合理窗口内 (5 分钟)
+                let grace_window = chrono::Duration::minutes(5);
+                if cutoff <= completed_at + grace_window {
+                    // 返回父会话的完整 token 历史
+                    return Ok(self.events.iter().map(|e| e.signature.clone()).collect());
+                } else {
+                    return Err(format!(
+                        "子会话 fork 时间超出父会话终止时间的合理范围 (completed_at={}, cutoff={})",
+                        completed_at, cutoff
+                    ));
+                }
+            }
+        }
+
+        // 原有逻辑: 父会话仍在运行中的情况
         if self
             .max_timestamp
             .is_none_or(|timestamp| timestamp < cutoff)
@@ -989,6 +1012,8 @@ fn parent_signatures_before(
     let mut events = Vec::new();
     let mut max_timestamp: Option<DateTime<Utc>> = None;
     let mut has_token_without_timestamp = false;
+    let mut session_completed = false;
+    let mut completed_at: Option<DateTime<Utc>> = None;
 
     // 必须扫描完整父文件，不能在首个未来时间戳处 break：rollout 写入顺序
     // 不承诺时间戳严格单调。缓存完整时间线后，不同 child cutoff 只需内存过滤。
@@ -1003,6 +1028,18 @@ fn parent_signatures_before(
         if let Some(timestamp) = timestamp {
             max_timestamp = Some(max_timestamp.map_or(timestamp, |current| current.max(timestamp)));
         }
+
+        // 检测 session 终止事件
+        if value.get("type").and_then(serde_json::Value::as_str) == Some("event_msg") {
+            if let Some(payload) = value.get("payload") {
+                if payload.get("type").and_then(serde_json::Value::as_str) == Some("task_complete")
+                {
+                    session_completed = true;
+                    completed_at = timestamp.or(max_timestamp);
+                }
+            }
+        }
+
         if value.get("type").and_then(serde_json::Value::as_str) != Some("event_msg")
             || value
                 .get("payload")
@@ -1036,6 +1073,8 @@ fn parent_signatures_before(
         events,
         max_timestamp,
         has_token_without_timestamp,
+        session_completed,
+        completed_at,
     });
     let result = timeline.signatures_before(parent_path, cutoff);
     if let (Some(stamp), Ok(mut caches)) = (stamp, replay_caches().lock()) {
