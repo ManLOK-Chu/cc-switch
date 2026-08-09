@@ -28,22 +28,25 @@ vi.mock("react-i18next", () => ({
 
 vi.mock("@/components/common/FullScreenPanel", () => ({
   FullScreenPanel: ({
+    isOpen,
     onClose,
     footer,
     children,
   }: {
+    isOpen: boolean;
     onClose: () => void;
     footer?: React.ReactNode;
     children: React.ReactNode;
-  }) => (
-    <div>
-      <button type="button" onClick={onClose}>
-        panel-close
-      </button>
-      {children}
-      {footer}
-    </div>
-  ),
+  }) =>
+    isOpen ? (
+      <div>
+        <button type="button" onClick={onClose}>
+          panel-close
+        </button>
+        {children}
+        {footer}
+      </div>
+    ) : null,
 }));
 
 vi.mock("@/components/MarkdownEditor", () => ({
