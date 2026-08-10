@@ -43,6 +43,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
 
+/// 父 rollout 静止判定窗口：最后一条事件距今超过该窗口，即认为父文件已停止写入，
+/// 其当前内容就是终态。用于区分「父文件仍在写」与「父会话早已结束」两种情形。
+const PARENT_SETTLE_WINDOW_SECONDS: i64 = 10 * 60;
+
 /// 累计 token 用量（跟踪 total_token_usage 字段）
 #[derive(Debug, Clone, Default)]
 struct CumulativeTokens {
@@ -144,10 +148,6 @@ struct ParentTokenTimeline {
     events: Vec<TimestampedTokenSignature>,
     max_timestamp: Option<DateTime<Utc>>,
     has_token_without_timestamp: bool,
-    /// 父会话是否已完整终止 (有 task_complete 事件)
-    session_completed: bool,
-    /// 父会话终止时的时间戳
-    completed_at: Option<DateTime<Utc>>,
 }
 
 impl ParentTokenTimeline {
@@ -163,32 +163,34 @@ impl ParentTokenTimeline {
             ));
         }
 
-        // 如果父会话已完整终止,允许使用其完整 token 历史
-        if self.session_completed {
-            if let Some(completed_at) = self.completed_at {
-                // 允许子会话 fork 时间在父会话结束后的合理窗口内 (5 分钟)
-                let grace_window = chrono::Duration::minutes(5);
-                if cutoff <= completed_at + grace_window {
-                    // 返回父会话的完整 token 历史
-                    return Ok(self.events.iter().map(|e| e.signature.clone()).collect());
-                } else {
-                    return Err(format!(
-                        "子会话 fork 时间超出父会话终止时间的合理范围 (completed_at={}, cutoff={})",
-                        completed_at, cutoff
-                    ));
-                }
-            }
-        }
-
-        // 原有逻辑: 父会话仍在运行中的情况
+        // 父文件未写到 child fork 时刻。此时有两种可能，必须区分：
+        //   1. 父会话仍在运行，只是还没 flush 到 cutoff —— 继续等，否则 replay
+        //      前缀会算短，父子重叠的 token 被双算。
+        //   2. 父会话早已结束（fork 自一个陈旧会话）—— 父文件永远不会再写，
+        //      其现有内容就是终态，等下去只会永久 deferred。
+        // 判据是父文件是否还在被写入，而非 fork 距父会话末次活动多久（后者由
+        // 用户行为决定，无合理上限）。沿用 grok 导入的沉降窗口口径：末次事件
+        // 距当前墙钟超过窗口即认为文件已静止。
         if self
             .max_timestamp
             .is_none_or(|timestamp| timestamp < cutoff)
         {
-            return Err(format!(
-                "父 rollout {} 尚未写到 child fork 时刻",
-                parent_path.display()
-            ));
+            let settled = self.max_timestamp.is_some_and(|timestamp| {
+                Utc::now().signed_duration_since(timestamp).num_seconds()
+                    >= PARENT_SETTLE_WINDOW_SECONDS
+            });
+            if !settled {
+                return Err(format!(
+                    "父 rollout {} 尚未写到 child fork 时刻",
+                    parent_path.display()
+                ));
+            }
+            // 父文件已静止：其完整 token 历史即为 replay 前缀。
+            return Ok(self
+                .events
+                .iter()
+                .map(|event| event.signature.clone())
+                .collect());
         }
         Ok(self
             .events
@@ -1012,8 +1014,6 @@ fn parent_signatures_before(
     let mut events = Vec::new();
     let mut max_timestamp: Option<DateTime<Utc>> = None;
     let mut has_token_without_timestamp = false;
-    let mut session_completed = false;
-    let mut completed_at: Option<DateTime<Utc>> = None;
 
     // 必须扫描完整父文件，不能在首个未来时间戳处 break：rollout 写入顺序
     // 不承诺时间戳严格单调。缓存完整时间线后，不同 child cutoff 只需内存过滤。
@@ -1027,17 +1027,6 @@ fn parent_signatures_before(
         let timestamp = parse_timestamp(value.get("timestamp"));
         if let Some(timestamp) = timestamp {
             max_timestamp = Some(max_timestamp.map_or(timestamp, |current| current.max(timestamp)));
-        }
-
-        // 检测 session 终止事件
-        if value.get("type").and_then(serde_json::Value::as_str) == Some("event_msg") {
-            if let Some(payload) = value.get("payload") {
-                if payload.get("type").and_then(serde_json::Value::as_str) == Some("task_complete")
-                {
-                    session_completed = true;
-                    completed_at = timestamp.or(max_timestamp);
-                }
-            }
         }
 
         if value.get("type").and_then(serde_json::Value::as_str) != Some("event_msg")
@@ -1073,8 +1062,6 @@ fn parent_signatures_before(
         events,
         max_timestamp,
         has_token_without_timestamp,
-        session_completed,
-        completed_at,
     });
     let result = timeline.signatures_before(parent_path, cutoff);
     if let (Some(stamp), Ok(mut caches)) = (stamp, replay_caches().lock()) {
@@ -2565,6 +2552,46 @@ mod tests {
         assert_eq!(
             (result.imported, result.skipped, result.deferred),
             (1, 0, false)
+        );
+        Ok(())
+    }
+
+    /// 父会话早已结束、子会话事后 fork：父文件永远不会写到 fork 时刻，
+    /// 必须按静止文件处理并导入，否则会永久 deferred（回归）。
+    #[test]
+    #[serial_test::serial]
+    fn test_settled_parent_behind_fork_point_is_imported() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let parent = rollout_path(temp.path(), PARENT_ID);
+        let child = rollout_path(temp.path(), CHILD_A_ID);
+        // 父文件末次事件（03:00:02）早于子会话 fork 时刻（03:10:00），
+        // 且时间戳远早于当前墙钟，落在静止窗口之外。
+        write_jsonl(
+            &parent,
+            &[
+                session_meta(PARENT_ID),
+                token_count_at(100, 50, 10, "2026-07-10T03:00:01Z"),
+                token_count_at(200, 100, 20, "2026-07-10T03:00:02Z"),
+            ],
+        );
+        write_jsonl(
+            &child,
+            &[
+                session_meta_at(CHILD_A_ID, Some(PARENT_ID), None, "2026-07-10T03:10:00Z"),
+                // 前两条与父文件重合，属 replay，应被跳过而非重复计费
+                token_count_at(100, 50, 10, "2026-07-10T03:10:01Z"),
+                token_count_at(200, 100, 20, "2026-07-10T03:10:02Z"),
+                // 子会话自身新增用量，应被导入
+                token_count_at(300, 150, 30, "2026-07-10T03:10:03Z"),
+            ],
+        );
+
+        let result = sync_test_file(&db, &child, &[&parent, &child])?;
+        assert_eq!(
+            (result.imported, result.skipped, result.deferred),
+            (1, 2, false)
         );
         Ok(())
     }
