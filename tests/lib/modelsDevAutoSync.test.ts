@@ -4,11 +4,15 @@ const {
   getModelsDevSyncConfig,
   updateModelPricingBatch,
   recordModelsDevSyncResult,
+  invoke,
 } = vi.hoisted(() => ({
   getModelsDevSyncConfig: vi.fn(),
   updateModelPricingBatch: vi.fn(),
   recordModelsDevSyncResult: vi.fn(),
+  invoke: vi.fn(),
 }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 vi.mock("@/lib/api/usage", () => ({
   usageApi: {
@@ -40,32 +44,26 @@ describe("syncModelsDevPricing", () => {
     vi.clearAllMocks();
     updateModelPricingBatch.mockResolvedValue(2);
     recordModelsDevSyncResult.mockResolvedValue(undefined);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          openai: {
-            models: {
-              "gpt-5": {
-                name: "GPT-5",
-                release_date: "2025-08-01",
-                cost: { input: 1, output: 2 },
-              },
-            },
+    invoke.mockResolvedValue({
+      openai: {
+        models: {
+          "gpt-5": {
+            name: "GPT-5",
+            release_date: "2025-08-01",
+            cost: { input: 1, output: 2 },
           },
-          relay: {
-            models: {
-              "custom-model": {
-                name: "Custom Model",
-                release_date: "2025-07-01",
-                cost: { input: 0.5, output: 1 },
-              },
-            },
+        },
+      },
+      relay: {
+        models: {
+          "custom-model": {
+            name: "Custom Model",
+            release_date: "2025-07-01",
+            cost: { input: 0.5, output: 1 },
           },
-        }),
-      }),
-    );
+        },
+      },
+    });
   });
 
   it("skips network access when automatic sync is disabled", async () => {
@@ -77,7 +75,7 @@ describe("syncModelsDevPricing", () => {
     const result = await syncModelsDevPricing();
 
     expect(result.skipped).toBe(true);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
     expect(updateModelPricingBatch).not.toHaveBeenCalled();
   });
 
@@ -100,7 +98,7 @@ describe("syncModelsDevPricing", () => {
       changed: 0,
       syncedAt: lastSyncAt,
     });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
     expect(updateModelPricingBatch).not.toHaveBeenCalled();
   });
 
@@ -109,6 +107,8 @@ describe("syncModelsDevPricing", () => {
 
     const result = await syncModelsDevPricing();
 
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("fetch_models_dev_pricing");
     expect(updateModelPricingBatch).toHaveBeenCalledTimes(1);
     expect(updateModelPricingBatch).toHaveBeenCalledWith([
       expect.objectContaining({ modelId: "gpt-5", inputCostPerMillion: "1" }),
@@ -127,9 +127,6 @@ describe("syncModelsDevPricing", () => {
       expect.any(Number),
       null,
     );
-    const fetchOptions = vi.mocked(fetch).mock.calls[0]?.[1];
-    expect(fetchOptions).toEqual({ signal: expect.any(AbortSignal) });
-    expect(fetchOptions).not.toHaveProperty("cache");
   });
 
   it("stops a startup sync when automatic sync is disabled during download", async () => {
@@ -191,7 +188,7 @@ describe("syncModelsDevPricing", () => {
   it("persists the last error without replacing the previous success time", async () => {
     const previous = { ...state, config: { ...state.config, lastSyncAt: 123 } };
     getModelsDevSyncConfig.mockResolvedValue(previous);
-    vi.mocked(fetch).mockRejectedValueOnce(new Error("offline"));
+    invoke.mockRejectedValueOnce(new Error("offline"));
 
     await expect(syncModelsDevPricing()).rejects.toThrow("offline");
     expect(recordModelsDevSyncResult).toHaveBeenCalledWith(null, "offline");

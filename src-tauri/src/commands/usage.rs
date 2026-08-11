@@ -4,7 +4,11 @@ use crate::error::AppError;
 use crate::services::model_pricing::{ModelPricingInfo, ModelsDevSyncConfig, ModelsDevSyncState};
 use crate::services::usage_stats::*;
 use crate::store::AppState;
+use std::time::Duration;
 use tauri::State;
+
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+const MODELS_DEV_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 获取使用量汇总
 #[tauri::command]
@@ -228,6 +232,44 @@ pub fn record_models_dev_sync_result(
     crate::services::model_pricing::record_models_dev_sync_result(&state.db, synced_at, error)
 }
 
+/// 从 models.dev 获取原始定价数据。
+///
+/// URL 固定在后端，避免前端借此命令请求任意地址；请求使用全局 HTTP
+/// 客户端，因此会自动遵循 CC Switch 的全局出站代理配置。
+#[tauri::command]
+pub async fn fetch_models_dev_pricing() -> Result<serde_json::Value, String> {
+    let response = crate::proxy::http_client::get()
+        .get(MODELS_DEV_API_URL)
+        .timeout(MODELS_DEV_FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("Failed to fetch models.dev pricing: {error}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("models.dev returned HTTP {status}"));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read models.dev response: {error}"))?;
+
+    parse_models_dev_response(status, &body)
+}
+
+fn parse_models_dev_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<serde_json::Value, String> {
+    if !status.is_success() {
+        return Err(format!("models.dev returned HTTP {status}"));
+    }
+
+    serde_json::from_str(body)
+        .map_err(|error| format!("Failed to parse models.dev pricing response: {error}"))
+}
+
 /// 检查 Provider 使用限额
 #[tauri::command]
 pub fn check_provider_limits(
@@ -326,5 +368,24 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(crate::usage_events::take_test_notify_count(), 1);
+    }
+
+    #[test]
+    fn models_dev_response_rejects_non_success_status() {
+        let error = parse_models_dev_response(reqwest::StatusCode::BAD_GATEWAY, "{}").unwrap_err();
+        assert_eq!(error, "models.dev returned HTTP 502 Bad Gateway");
+    }
+
+    #[test]
+    fn models_dev_response_parses_valid_json() {
+        let value = parse_models_dev_response(reqwest::StatusCode::OK, r#"{"openai":{}}"#)
+            .expect("valid JSON should be returned");
+        assert_eq!(value["openai"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn models_dev_response_reports_invalid_json() {
+        let error = parse_models_dev_response(reqwest::StatusCode::OK, "not json").unwrap_err();
+        assert!(error.starts_with("Failed to parse models.dev pricing response:"));
     }
 }

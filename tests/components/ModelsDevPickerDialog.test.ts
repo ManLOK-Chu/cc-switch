@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import {
   flattenModels,
@@ -6,10 +10,21 @@ import {
   normalizeModelIdForPricing,
 } from "@/components/usage/ModelsDevPickerDialog";
 import {
+  fetchModelsDevPricing,
   getCommonModelKeys,
   resolveModelsDevSelection,
   toModelPricing,
 } from "@/lib/modelsDevPricing";
+
+describe("fetchModelsDevPricing", () => {
+  it("loads data through the Rust Tauri command", async () => {
+    const response = { openai: { models: {} } };
+    invoke.mockResolvedValueOnce(response);
+
+    await expect(fetchModelsDevPricing()).resolves.toBe(response);
+    expect(invoke).toHaveBeenCalledWith("fetch_models_dev_pricing");
+  });
+});
 
 describe("normalizeModelIdForPricing", () => {
   it("keeps already-normalized ids unchanged", () => {

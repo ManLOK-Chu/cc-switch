@@ -8,13 +8,17 @@ const {
   getModelPricing,
   openAppConfigFolder,
   syncModelsDevPricing,
+  invoke,
 } = vi.hoisted(() => ({
   getModelsDevSyncConfig: vi.fn(),
   saveModelsDevSyncConfig: vi.fn(),
   getModelPricing: vi.fn(),
   openAppConfigFolder: vi.fn(),
   syncModelsDevPricing: vi.fn(),
+  invoke: vi.fn(),
 }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -84,34 +88,28 @@ describe("ModelsDevAutoSyncPanel", () => {
       changed: 1,
       syncedAt: Date.now(),
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          openai: {
-            name: "OpenAI",
-            models: {
-              "gpt-5": {
-                name: "GPT-5",
-                release_date: "2025-08-01",
-                cost: { input: 1, output: 2 },
-              },
-            },
+    invoke.mockResolvedValue({
+      openai: {
+        name: "OpenAI",
+        models: {
+          "gpt-5": {
+            name: "GPT-5",
+            release_date: "2025-08-01",
+            cost: { input: 1, output: 2 },
           },
-          deepseek: {
-            name: "DeepSeek",
-            models: {
-              "deepseek-chat": {
-                name: "DeepSeek Chat",
-                release_date: "2025-12-01",
-                cost: { input: 0.3, output: 1.2 },
-              },
-            },
+        },
+      },
+      deepseek: {
+        name: "DeepSeek",
+        models: {
+          "deepseek-chat": {
+            name: "DeepSeek Chat",
+            release_date: "2025-12-01",
+            cost: { input: 0.3, output: 1.2 },
           },
-        }),
-      }),
-    );
+        },
+      },
+    });
   });
 
   it("loads automatic sync as disabled by default", async () => {
