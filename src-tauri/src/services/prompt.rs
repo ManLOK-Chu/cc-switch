@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use std::path::Path;
 
 use crate::app_config::AppType;
 use crate::config::write_text_file;
@@ -18,6 +19,39 @@ fn get_unix_timestamp() -> Result<i64, AppError> {
 }
 
 pub struct PromptService;
+
+fn project_prompt_set_to_path(
+    prompts: &IndexMap<String, Prompt>,
+    target_path: &Path,
+    snippet: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let enabled: Vec<(&String, &Prompt)> = prompts
+        .iter()
+        .filter(|(_, prompt)| prompt.enabled)
+        .collect();
+
+    if let Some((_, prompt)) = enabled.first() {
+        let content = PromptService::render_prompt_content(prompt, snippet);
+        write_text_file(target_path, &content)?;
+    } else if target_path.exists() {
+        // Match the existing "disable the last prompt" behavior without
+        // creating an otherwise unused application config directory.
+        write_text_file(target_path, "")?;
+    }
+
+    if enabled.len() <= 1 {
+        return Ok(None);
+    }
+
+    let ids = enabled
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(Some(format!(
+        "多个 Prompt 同时启用，已按稳定顺序投影第一个；enabled IDs: {ids}"
+    )))
+}
 
 impl PromptService {
     pub(crate) fn render_prompt_content(prompt: &Prompt, snippet: Option<&str>) -> String {
@@ -241,6 +275,49 @@ impl PromptService {
         let content =
             std::fs::read_to_string(&file_path).map_err(|e| AppError::io(&file_path, e))?;
         Ok(Some(content))
+    }
+
+    /// Project the database SSOT to one application's managed prompt file.
+    ///
+    /// This deliberately does not call `enable_prompt`: restore paths must not
+    /// read stale live content and write it back into the freshly imported DB.
+    pub fn sync_to_live(state: &AppState, app: AppType) -> Result<(), AppError> {
+        if matches!(app, AppType::ClaudeDesktop) {
+            return Ok(());
+        }
+
+        let prompts = state.db.get_prompts(app.as_str())?;
+        let target_path = prompt_file_path(&app)?;
+        let snippet = state.db.get_prompt_common_snippet(app.as_str())?;
+        if let Some(warning) =
+            project_prompt_set_to_path(&prompts, &target_path, snippet.as_deref())?
+        {
+            return Err(AppError::Message(warning));
+        }
+        Ok(())
+    }
+
+    /// Best-effort projection for every Prompt-capable application.
+    pub fn sync_all_to_live(state: &AppState) -> Result<(), AppError> {
+        let mut failures = Vec::new();
+        for app in AppType::all() {
+            if matches!(app, AppType::ClaudeDesktop) {
+                continue;
+            }
+            if let Err(error) = Self::sync_to_live(state, app.clone()) {
+                log::warn!("同步 Prompt 到 {app:?} 失败: {error}");
+                failures.push(format!("{}: {error}", app.as_str()));
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Message(format!(
+                "部分应用 Prompt 同步失败: {}",
+                failures.join("; ")
+            )))
+        }
     }
 
     /// 首次启动时从现有提示词文件自动导入（如果存在）
@@ -528,6 +605,76 @@ mod tests {
                 "before {{common}} after"
             );
             assert_eq!(prompts.len(), 2);
+        });
+    }
+
+    #[test]
+    fn restored_prompt_projection_writes_the_enabled_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("AGENTS.md");
+        let mut prompts = IndexMap::new();
+        prompts.insert("off".to_string(), make_prompt("off", "old", false));
+        prompts.insert("on".to_string(), make_prompt("on", "restored", true));
+
+        let warning = project_prompt_set_to_path(&prompts, &path, None).expect("project prompt");
+        assert!(warning.is_none());
+        assert_eq!(fs::read_to_string(path).expect("read prompt"), "restored");
+    }
+
+    #[test]
+    fn restored_prompt_projection_clears_a_stale_file_when_none_are_enabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("AGENTS.md");
+        fs::write(&path, "stale").expect("seed stale prompt");
+        let prompts = IndexMap::new();
+
+        let warning = project_prompt_set_to_path(&prompts, &path, None).expect("clear prompt");
+        assert!(warning.is_none());
+        assert_eq!(fs::read_to_string(path).expect("read prompt"), "");
+    }
+
+    #[test]
+    fn restored_prompt_projection_selects_the_first_enabled_prompt_deterministically() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("AGENTS.md");
+        let mut prompts = IndexMap::new();
+        prompts.insert(
+            "first".to_string(),
+            make_prompt("first", "first body", true),
+        );
+        prompts.insert(
+            "second".to_string(),
+            make_prompt("second", "second body", true),
+        );
+
+        let warning = project_prompt_set_to_path(&prompts, &path, None)
+            .expect("project prompt")
+            .expect("duplicate enabled prompts should warn");
+        assert!(warning.contains("first, second"));
+        assert_eq!(fs::read_to_string(path).expect("read prompt"), "first body");
+    }
+
+    #[test]
+    #[serial]
+    fn sync_to_live_renders_common_prompt_snippet() {
+        with_test_state(|state| {
+            let prompt = make_prompt("p1", "before {{common}} after", true);
+            state
+                .db
+                .save_prompt(AppType::Claude.as_str(), &prompt)
+                .expect("save prompt");
+            state
+                .db
+                .set_prompt_common_snippet("claude", Some("shared".to_string()))
+                .expect("set snippet");
+
+            PromptService::sync_to_live(state, AppType::Claude).expect("sync prompt");
+
+            let target_path = prompt_file_path(&AppType::Claude).expect("prompt path");
+            assert_eq!(
+                fs::read_to_string(target_path).expect("read prompt"),
+                "before shared after"
+            );
         });
     }
 }
