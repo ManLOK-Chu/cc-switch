@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModelPricing, ModelsDevSyncConfig } from "@/types/usage";
 
+export const MODELS_DEV_API_URL = "https://models.dev/api.json";
+export const MODELS_DEV_QUERY_KEY = ["models-dev-pricing"] as const;
+export const MODELS_DEV_STALE_TIME_MS = 60 * 60 * 1000;
 export interface ModelsDevCost {
   input?: number;
   output?: number;

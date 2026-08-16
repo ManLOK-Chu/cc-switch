@@ -45,3 +45,12 @@ if (!Element.prototype.setPointerCapture) {
 if (!Element.prototype.releasePointerCapture) {
   Element.prototype.releasePointerCapture = () => {};
 }
+
+Object.defineProperty(globalThis, "__TAURI_OS_PLUGIN_INTERNALS__", {
+  value: {
+    os_type: "macos",
+    version: "15.1.0",
+    arch: "aarch64",
+  },
+  configurable: true,
+});
