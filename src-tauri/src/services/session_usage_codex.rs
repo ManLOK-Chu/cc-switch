@@ -570,14 +570,19 @@ fn get_codex_sync_state(
 
     match inherited {
         Some(cursor) => {
+            // 继承兄弟文件的游标时，file_size 应设为 0，避免误匹配跳过新文件的首次同步
             update_sync_state_with_file_size(
                 db,
                 &file_path_str,
                 cursor.modified_nanos,
                 cursor.line_offset,
-                cursor.file_size,
+                0, // 新文件使用 0，强制首次同步
             )?;
-            Ok(cursor)
+            Ok(CodexSyncCursor {
+                modified_nanos: cursor.modified_nanos,
+                line_offset: cursor.line_offset,
+                file_size: 0,
+            })
         }
         None => Ok(state),
     }
