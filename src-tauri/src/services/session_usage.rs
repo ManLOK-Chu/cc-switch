@@ -493,6 +493,59 @@ pub(crate) fn update_sync_state_on_conn(
     Ok(())
 }
 
+/// 更新同步游标，并同时记录源文件大小。
+///
+/// Codex 的 Windows 日志写入进程可能在句柄关闭前不刷新 mtime，因此其
+/// 增量同步必须把文件大小作为第二个变化信号。其他解析器继续使用原游标。
+pub(crate) fn update_sync_state_with_file_size(
+    db: &Database,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+    last_file_size: u64,
+) -> Result<(), AppError> {
+    let conn = lock_conn!(db.conn);
+    update_sync_state_with_file_size_on_conn(
+        &conn,
+        file_path,
+        last_modified,
+        last_offset,
+        last_file_size,
+    )
+}
+
+/// [`update_sync_state_with_file_size`] 的免锁版本。
+pub(crate) fn update_sync_state_with_file_size_on_conn(
+    conn: &rusqlite::Connection,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+    last_file_size: u64,
+) -> Result<(), AppError> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let last_file_size = last_file_size.min(i64::MAX as u64) as i64;
+
+    conn.prepare_cached(
+        "INSERT OR REPLACE INTO session_log_sync
+         (file_path, last_modified, last_line_offset, last_file_size, last_synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .and_then(|mut stmt| {
+        stmt.execute(rusqlite::params![
+            file_path,
+            last_modified,
+            last_offset,
+            last_file_size,
+            now
+        ])
+    })
+    .map_err(|e| AppError::Database(format!("更新同步状态失败: {e}")))?;
+    Ok(())
+}
+
 /// 插入单条会话日志到 proxy_request_logs，返回是否成功插入 (true=新插入, false=已存在)
 fn insert_session_log_entry(
     db: &Database,

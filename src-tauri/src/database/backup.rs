@@ -2127,8 +2127,9 @@ mod tests {
                 "INSERT INTO providers (id, app_type, name, settings_config, meta)
                  VALUES ('cursor-provider', 'claude', 'Cursor Provider', '{}', '{}');
                  INSERT INTO session_log_sync (
-                     file_path, last_modified, last_line_offset, last_synced_at
-                 ) VALUES ('/local/sessions/manual-backup.jsonl', 11, 22, 33);",
+                     file_path, last_modified, last_line_offset, last_file_size,
+                     last_synced_at
+                 ) VALUES ('/local/sessions/manual-backup.jsonl', 11, 22, 44, 33);",
             )?;
         }
 
@@ -2137,15 +2138,24 @@ mod tests {
         target.import_sql_string(&sql)?;
 
         let conn = crate::database::lock_conn!(target.conn);
-        let cursor: (String, i64, i64, i64) = conn.query_row(
-            "SELECT file_path, last_modified, last_line_offset, last_synced_at
+        let cursor: (String, i64, i64, i64, i64) = conn.query_row(
+            "SELECT file_path, last_modified, last_line_offset, last_file_size,
+                    last_synced_at
              FROM session_log_sync",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
         assert_eq!(
             cursor,
-            ("/local/sessions/manual-backup.jsonl".into(), 11, 22, 33,)
+            ("/local/sessions/manual-backup.jsonl".into(), 11, 22, 44, 33,)
         );
         Ok(())
     }
