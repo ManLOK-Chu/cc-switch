@@ -19,7 +19,8 @@ use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
 use crate::services::session_usage::{
-    metadata_modified_nanos, update_sync_state, update_sync_state_on_conn, SessionSyncResult,
+    metadata_modified_nanos, update_sync_state_with_file_size,
+    update_sync_state_with_file_size_on_conn, SessionSyncResult,
 };
 use crate::services::usage_stats::{
     find_model_pricing, has_suspected_codex_session_duplicate, should_skip_session_insert, DedupKey,
@@ -493,8 +494,15 @@ fn token_snapshot_source(payload: &serde_json::Value) -> Option<String> {
 ///   不丢数据、不双算。
 /// - `pricing`：模型定价 pass 级缓存。定价表在 pass 进行中被修改时本 pass
 ///   仍用旧价，下一个同步 pass 生效。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CodexSyncCursor {
+    modified_nanos: i64,
+    line_offset: i64,
+    file_size: u64,
+}
+
 struct CodexSyncPass {
-    cursors: HashMap<String, (i64, i64)>,
+    cursors: HashMap<String, CodexSyncCursor>,
     pricing: HashMap<String, Option<ModelPricing>>,
 }
 
@@ -502,13 +510,20 @@ impl CodexSyncPass {
     fn load(db: &Database) -> Result<Self, AppError> {
         let conn = lock_conn!(db.conn);
         let mut stmt = conn
-            .prepare("SELECT file_path, last_modified, last_line_offset FROM session_log_sync")
+            .prepare(
+                "SELECT file_path, last_modified, last_line_offset, last_file_size
+                 FROM session_log_sync",
+            )
             .map_err(|e| AppError::Database(format!("预载同步游标失败: {e}")))?;
         let cursors = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
+                    CodexSyncCursor {
+                        modified_nanos: row.get(1)?,
+                        line_offset: row.get(2)?,
+                        file_size: row.get::<_, i64>(3)?.max(0) as u64,
+                    },
                 ))
             })
             .and_then(|rows| rows.collect::<Result<HashMap<_, _>, _>>())
@@ -523,11 +538,11 @@ impl CodexSyncPass {
 fn get_codex_sync_state(
     db: &Database,
     file_path: &Path,
-    cursors: &HashMap<String, (i64, i64)>,
-) -> Result<(i64, i64), AppError> {
+    cursors: &HashMap<String, CodexSyncCursor>,
+) -> Result<CodexSyncCursor, AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
-    let state = cursors.get(&file_path_str).copied().unwrap_or((0, 0));
-    if state != (0, 0)
+    let state = cursors.get(&file_path_str).copied().unwrap_or_default();
+    if state != CodexSyncCursor::default()
         || file_path
             .parent()
             .and_then(Path::file_name)
@@ -550,13 +565,19 @@ fn get_codex_sync_state(
             path.as_str() != file_path_str
                 && (path.ends_with(&slash_suffix) || path.ends_with(&backslash_suffix))
         })
-        .map(|(_, &(modified, offset))| (offset, modified))
-        .max();
+        .map(|(_, cursor)| *cursor)
+        .max_by_key(|cursor| (cursor.line_offset, cursor.modified_nanos));
 
     match inherited {
-        Some((offset, modified)) => {
-            update_sync_state(db, &file_path_str, modified, offset)?;
-            Ok((modified, offset))
+        Some(cursor) => {
+            update_sync_state_with_file_size(
+                db,
+                &file_path_str,
+                cursor.modified_nanos,
+                cursor.line_offset,
+                cursor.file_size,
+            )?;
+            Ok(cursor)
         }
         None => Ok(state),
     }
@@ -1171,12 +1192,13 @@ fn sync_single_codex_file(
     let file_size = metadata.len();
 
     // 检查同步状态
-    let (last_modified, last_offset) = get_codex_sync_state(db, file_path, &pass.cursors)?;
+    let cursor = get_codex_sync_state(db, file_path, &pass.cursors)?;
 
     // 文件未变化则跳过
-    if file_modified <= last_modified {
+    if file_modified == cursor.modified_nanos && file_size == cursor.file_size {
         return Ok(CodexFileSyncResult::default());
     }
+    let last_offset = cursor.line_offset;
 
     if let Ok(mut caches) = replay_caches().lock() {
         if let Some(pending) = caches.pending.get(file_path).cloned() {
@@ -1207,7 +1229,13 @@ fn sync_single_codex_file(
 
     let parsed = parse_codex_file(file_path, thread_id_from_filename(file_path))?;
     if !parsed.has_billable_tokens {
-        update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
+        update_sync_state_with_file_size(
+            db,
+            &file_path_str,
+            file_modified,
+            parsed.line_offset,
+            file_size,
+        )?;
         return Ok(CodexFileSyncResult::default());
     }
     let Some(root_thread_id) = parsed.root_thread_id.as_deref() else {
@@ -1357,7 +1385,13 @@ fn sync_single_codex_file(
         if is_last_batch {
             // 游标推进与最后一批数据同事务提交：中途崩溃时两者一起回滚，
             // 不会出现"游标已推进但数据缺失"的丢数据窗口。
-            update_sync_state_on_conn(&tx, &file_path_str, file_modified, parsed.line_offset)?;
+            update_sync_state_with_file_size_on_conn(
+                &tx,
+                &file_path_str,
+                file_modified,
+                parsed.line_offset,
+                file_size,
+            )?;
         }
         tx.commit()
             .map_err(|e| AppError::Database(format!("提交 Codex 会话写入事务失败: {e}")))?;
@@ -1368,7 +1402,13 @@ fn sync_single_codex_file(
     }
 
     if to_insert.is_empty() {
-        update_sync_state(db, &file_path_str, file_modified, parsed.line_offset)?;
+        update_sync_state_with_file_size(
+            db,
+            &file_path_str,
+            file_modified,
+            parsed.line_offset,
+            file_size,
+        )?;
     }
     Ok(result)
 }
@@ -1533,7 +1573,7 @@ fn find_codex_pricing(conn: &rusqlite::Connection, model_id: &str) -> Option<Mod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::session_usage::get_sync_state;
+    use crate::services::session_usage::{get_sync_state, update_sync_state};
     use tempfile::tempdir;
 
     const PARENT_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -2450,6 +2490,67 @@ mod tests {
             (replacement_stamp.size, replacement_stamp.modified_nanos)
         );
         assert_ne!(original_stamp, replacement_stamp);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    #[serial_test::serial]
+    fn test_growing_log_with_unchanged_mtime_is_synced() -> Result<(), AppError> {
+        clear_codex_replay_caches();
+        let db = Database::memory()?;
+        let temp = tempdir().unwrap();
+        let rollout = rollout_path(temp.path(), CHILD_A_ID);
+        write_jsonl(
+            &rollout,
+            &[
+                session_meta(CHILD_A_ID),
+                turn_context(),
+                token_count_at(100, 50, 10, "2026-07-10T03:00:02Z"),
+            ],
+        );
+        let original_metadata = fs::metadata(&rollout).unwrap();
+        let original_modified = original_metadata.modified().unwrap();
+        let original_size = original_metadata.len();
+
+        assert_eq!(sync_test_file(&db, &rollout, &[&rollout])?.imported, 1);
+
+        let stored_cursor: (i64, i64) = {
+            let conn = lock_conn!(db.conn);
+            conn.query_row(
+                "SELECT last_modified, last_file_size
+                 FROM session_log_sync WHERE file_path = ?1",
+                [rollout.to_string_lossy().as_ref()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        };
+        assert_eq!(stored_cursor.1, original_size as i64);
+
+        let mut contents = fs::read_to_string(&rollout).unwrap();
+        contents.push_str(
+            &serde_json::to_string(&token_count_at(200, 100, 20, "2026-07-10T03:00:03Z")).unwrap(),
+        );
+        contents.push('\n');
+        fs::write(&rollout, contents).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&rollout)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(original_modified))
+            .unwrap();
+
+        let unchanged_modified = metadata_modified_nanos(&fs::metadata(&rollout).unwrap());
+        assert_eq!(unchanged_modified, stored_cursor.0);
+        assert!(fs::metadata(&rollout).unwrap().len() > original_size);
+
+        assert_eq!(sync_test_file(&db, &rollout, &[&rollout])?.imported, 1);
+        let conn = lock_conn!(db.conn);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE data_source = 'codex_session'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 2);
+        Ok(())
     }
 
     #[test]
