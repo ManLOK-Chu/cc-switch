@@ -204,38 +204,41 @@ jobs:
           "CC_SWITCH_WSL_TEST_TEMP=$testTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Compile backend tests with native temp
-        id: compile-backend-tests
         # link.exe/mt.exe cannot create manifests when TEMP points at a WSL UNC path.
+        # Record the built test binary path so the run step below can execute
+        # it directly instead of re-invoking cargo with TEMP on \\wsl.localhost.
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         shell: pwsh
         run: |
-          $output = cargo test --lib --manifest-path src-tauri/Cargo.toml --no-run --message-format=json
+          $testBinary = cargo test --lib --manifest-path src-tauri/Cargo.toml --no-run --message-format=json |
+            ForEach-Object {
+              if ($_ -match '"reason":"compiler-artifact"') {
+                $artifact = $_ | ConvertFrom-Json
+                if ($artifact.executable -and $artifact.profile.test -and $artifact.target.name -eq 'cc_switch_lib') {
+                  $artifact.executable
+                }
+              }
+            } | Select-Object -First 1 -Wait
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
-          $artifact = $output |
-            ForEach-Object { $_ | ConvertFrom-Json } |
-            Where-Object {
-              $_.reason -eq 'compiler-artifact' -and
-              $_.executable -and
-              $_.executable -like '*cc_switch_lib*.exe'
-            } |
-            Select-Object -Last 1
-          if (-not $artifact) {
-            throw "Failed to locate compiled cc-switch test executable"
+          if (-not $testBinary) {
+            throw "cc_switch_lib test binary not found in cargo compiler artifacts"
           }
-          "test_exe=$($artifact.executable)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "CC_SWITCH_TEST_EXE=$testBinary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run Windows-to-WSL2 filesystem contract
+        # Run the test binary built in the previous step directly. Invoking cargo
+        # here with TEMP pointing at a WSL UNC path can re-link the crate, and
+        # link.exe/mt.exe cannot create manifest temp files on \\wsl.localhost.
         shell: pwsh
         run: |
-          $exe = '${{ steps.compile-backend-tests.outputs.test_exe }}'
-          if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
-            throw "Compiled cc-switch test executable not found: $exe"
-          }
-          $testName = "config::tests::atomic_write_replaces_existing_wsl_unc_file"
           $env:TEMP = $env:CC_SWITCH_WSL_TEST_TEMP
           $env:TMP = $env:CC_SWITCH_WSL_TEST_TEMP
-          $testList = & $exe --list --ignored
+          $testName = "config::tests::atomic_write_replaces_existing_wsl_unc_file"
+          $testList = & $env:CC_SWITCH_TEST_EXE --list --ignored
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -243,7 +246,7 @@ jobs:
           if ($testList -notcontains $expected) {
             throw "Expected ignored test was not discovered: $testName"
           }
-          & $exe $testName --ignored --exact --nocapture
+          & $env:CC_SWITCH_TEST_EXE $testName --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
