@@ -3443,11 +3443,11 @@ fn rewrite_codex_alpha_search_full_url(
     Ok(rewritten)
 }
 
-/// OpenCode Go 上游判定：与 coding_plan::detect_provider 同效的子串匹配，
-/// 同时覆盖 /zen/go（claude 系直连形态）与 /zen/go/v1（chat 形态），
-/// 刻意排除无用量 API 的 Zen 按量版（/zen/v1）。
+/// OpenCode Go 上游判定：直接复用 coding_plan 的共享判定，
+/// 与用量轮询侧的供应商识别永远同效（大小写不敏感；同时覆盖
+/// /zen/go 与 /zen/go/v1，排除无用量 API 的 Zen 按量版 /zen/v1）。
 fn is_opencode_go_upstream(url: &str) -> bool {
-    url.contains("opencode.ai/zen/go")
+    crate::services::coding_plan::is_opencode_go_url(url)
 }
 
 fn build_codex_oauth_session_headers(
@@ -4394,6 +4394,10 @@ mod tests {
         ));
         assert!(is_opencode_go_upstream(
             "https://opencode.ai/zen/go/v1/messages"
+        ));
+        // 域名大小写不敏感，与 coding_plan::detect_provider 同效
+        assert!(is_opencode_go_upstream(
+            "https://OPENCODE.AI/ZEN/GO/V1/chat/completions"
         ));
         assert!(!is_opencode_go_upstream(
             "https://opencode.ai/zen/v1/chat/completions"
