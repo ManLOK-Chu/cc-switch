@@ -10,6 +10,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── 供应商检测 ──────────────────────────────────────────────
 
+/// OpenCode Go URL 标识：同时覆盖 /zen/go（claude 系直连形态）与
+/// /zen/go/v1（chat 形态）；Zen 按量版（/zen/v1）不含该子串，刻意不命中。
+/// 转发层（proxy::forwarder）复用同一判定，两处语义永远一致。
+pub(crate) const OPENCODE_GO_URL_MARKER: &str = "opencode.ai/zen/go";
+
+/// 大小写不敏感的 OpenCode Go 上游判定（域名大小写不影响匹配）。
+pub(crate) fn is_opencode_go_url(url: &str) -> bool {
+    url.to_lowercase().contains(OPENCODE_GO_URL_MARKER)
+}
+
 enum CodingPlanProvider {
     Kimi,
     ZhipuCn,
@@ -41,7 +51,7 @@ fn detect_provider(base_url: &str) -> Option<CodingPlanProvider> {
         Some(CodingPlanProvider::MiniMaxEn)
     } else if url.contains("zenmux") {
         Some(CodingPlanProvider::ZenMux)
-    } else if url.contains("opencode.ai/zen/go") {
+    } else if is_opencode_go_url(&url) {
         // 同时覆盖 /zen/go 与 /zen/go/v1 两档 base；Zen 按量版（/zen/v1）
         // 没有任何用量/余额 API（实测 404），刻意不命中。
         Some(CodingPlanProvider::OpencodeGo)
