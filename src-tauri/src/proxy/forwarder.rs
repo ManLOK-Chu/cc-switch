@@ -2285,6 +2285,22 @@ impl RequestForwarder {
             ordered_headers.insert(name, value);
         }
 
+        // OpenCode Go 要求每次推理请求携带 x-opencode-session 做按会话路由与优化
+        //（思路参考 deepseek-harness 74888537 的 sessionHeader：必须是动态会话 id，
+        // 静态值会让所有会话共用同一 id，故不写入任何预设的静态 headers）。
+        // 客户端已带则透传优先不覆盖；仅当会话 id 由客户端提供（跨请求稳定）时注入，
+        // 代理自生成的单请求 UUID 会破坏会话亲和性，故不发送（与 Codex OAuth 会话头同策略）。
+        let opencode_session_id = self.session_id.trim();
+        if self.session_client_provided
+            && is_opencode_go_upstream(&url)
+            && !opencode_session_id.is_empty()
+            && !ordered_headers.contains_key("x-opencode-session")
+        {
+            if let Ok(value) = http::HeaderValue::from_str(opencode_session_id) {
+                ordered_headers.insert("x-opencode-session", value);
+            }
+        }
+
         // 序列化请求体。GET/HEAD 是 idempotent/safe 方法，按 HTTP 语义不应携带 body；
         // 强行附带 JSON body 会让某些上游（如 Google Gemini 的 models.list）拒绝请求。
         let body_bytes = if matches!(method, &http::Method::GET | &http::Method::HEAD) {
@@ -3427,6 +3443,13 @@ fn rewrite_codex_alpha_search_full_url(
     Ok(rewritten)
 }
 
+/// OpenCode Go 上游判定：与 coding_plan::detect_provider 同效的子串匹配，
+/// 同时覆盖 /zen/go（claude 系直连形态）与 /zen/go/v1（chat 形态），
+/// 刻意排除无用量 API 的 Zen 按量版（/zen/v1）。
+fn is_opencode_go_upstream(url: &str) -> bool {
+    url.contains("opencode.ai/zen/go")
+}
+
 fn build_codex_oauth_session_headers(
     session_id: &str,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
@@ -4361,6 +4384,23 @@ mod tests {
             map.get("x-codex-window-id"),
             Some(&HeaderValue::from_static("session-123:0"))
         );
+    }
+
+    #[test]
+    fn opencode_go_upstream_matches_both_base_variants_but_not_zen_payg() {
+        assert!(is_opencode_go_upstream("https://opencode.ai/zen/go"));
+        assert!(is_opencode_go_upstream(
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        ));
+        assert!(is_opencode_go_upstream(
+            "https://opencode.ai/zen/go/v1/messages"
+        ));
+        assert!(!is_opencode_go_upstream(
+            "https://opencode.ai/zen/v1/chat/completions"
+        ));
+        assert!(!is_opencode_go_upstream(
+            "https://api.anthropic.com/v1/messages"
+        ));
     }
 
     #[test]
