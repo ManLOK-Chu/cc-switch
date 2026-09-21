@@ -834,7 +834,7 @@ fn parse_codex_file(
 ) -> Result<ParsedCodexFile, AppError> {
     let file =
         fs::File::open(file_path).map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut root_meta_seen = false;
     let mut root_timestamp = None;
     let mut meta_thread_id = None;
@@ -856,9 +856,22 @@ fn parse_codex_file(
     let mut line_offset = 0i64;
     let mut has_billable_tokens = false;
 
-    for line_result in reader.lines() {
+    loop {
+        let mut bytes = Vec::new();
+        let read = reader
+            .read_until(b'\n', &mut bytes)
+            .map_err(|e| AppError::Config(format!("无法读取 Codex 日志: {e}")))?;
+        // A live writer may have only written part of the final JSON record.
+        // Leave its line cursor unconsumed for the next file change, but retain
+        // support for a complete final JSON record without a newline.
+        if read == 0
+            || (bytes.last() != Some(&b'\n')
+                && serde_json::from_slice::<serde_json::Value>(&bytes).is_err())
+        {
+            break;
+        }
         line_offset += 1;
-        let line = match line_result {
+        let line = match String::from_utf8(bytes) {
             Ok(line) => line,
             Err(_) => continue,
         };
@@ -1234,7 +1247,8 @@ fn sync_single_codex_file(
     // 检查同步状态
     let cursor = get_codex_sync_state(db, file_path, &pass.cursors)?;
 
-    // 文件未变化则跳过
+    // 文件未变化则跳过。Windows 上 Codex 持有写入句柄时 mtime 可能不更新，
+    // 因此同时比较文件大小。
     if file_modified == cursor.modified_nanos && file_size == cursor.file_size {
         return Ok(CodexFileSyncResult::default());
     }
@@ -1765,6 +1779,182 @@ mod tests {
             .collect::<Vec<_>>();
         let mut pass = CodexSyncPass::load(db)?;
         sync_single_codex_file(db, file, &build_rollout_index(&files), &mut pass)
+    }
+
+    fn assert_unchanged_codex_file_is_skipped(db: &Database, file: &Path) -> Result<(), AppError> {
+        let changes_before: i64 = {
+            let conn = lock_conn!(db.conn);
+            conn.query_row("SELECT total_changes()", [], |row| row.get(0))?
+        };
+        // Reload the persisted cursor each time: returning zero imports alone
+        // does not prove that the file was skipped rather than fully reparsed.
+        for _ in 0..3 {
+            assert_eq!(sync_test_file(db, file, &[file])?.imported, 0);
+        }
+        let conn = lock_conn!(db.conn);
+        let changes_after: i64 = conn.query_row("SELECT total_changes()", [], |row| row.get(0))?;
+        assert_eq!(
+            changes_after, changes_before,
+            "unchanged file rewrote its cursor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_unchanged_incomplete_tail_is_skipped_after_cursor_reload() -> Result<(), AppError> {
+        use std::io::Write;
+        for has_usage in [false, true] {
+            for tail in ["{\"type\":\"event_msg\"", "  "] {
+                let db = Database::memory()?;
+                let dir = tempdir().unwrap();
+                let file = rollout_path(dir.path(), PARENT_ID);
+                let mut records = vec![session_meta(PARENT_ID), turn_context()];
+                if has_usage {
+                    records.push(token_count(100, 50, 10));
+                }
+                write_jsonl(&file, &records);
+                {
+                    let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+                    writer.write_all(tail.as_bytes()).unwrap();
+                }
+                assert_eq!(
+                    sync_test_file(&db, &file, &[&file])?.imported,
+                    u32::from(has_usage)
+                );
+                assert_eq!(
+                    get_sync_state(&db, &file.to_string_lossy())?.1,
+                    records.len() as i64
+                );
+                assert_unchanged_codex_file_is_skipped(&db, &file)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_append_with_unchanged_mtime_survives_reload_without_duplicates() -> Result<(), AppError>
+    {
+        use std::io::Write;
+        let db = Database::memory()?;
+        let dir = tempdir().unwrap();
+        let file = rollout_path(dir.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(writer, "{}", token_count(250, 100, 30)).unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        // Each call reloads its cursor from the DB, as after an application restart.
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let totals: (i64, i64, i64) = conn.query_row(
+            "SELECT count(*), sum(input_tokens), sum(output_tokens) FROM proxy_request_logs",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(totals, (2, 250, 30));
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_cursor_catches_up_with_unchanged_mtime() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempdir().unwrap();
+        let file = rollout_path(dir.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+                token_count(250, 100, 30),
+            ],
+        );
+        let modified = metadata_modified_nanos(&fs::metadata(&file).unwrap());
+        update_sync_state(&db, &file.to_string_lossy(), modified, 3)?;
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let bytes: i64 =
+            conn.query_row("SELECT last_file_size FROM session_log_sync", [], |r| {
+                r.get(0)
+            })?;
+        assert_eq!(bytes as u64, fs::metadata(&file).unwrap().len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_complete_final_record_without_newline_is_imported_once() -> Result<(), AppError> {
+        use std::io::Write;
+        let db = Database::memory()?;
+        let dir = tempdir().unwrap();
+        let file = rollout_path(dir.path(), PARENT_ID);
+        write_jsonl(&file, &[session_meta(PARENT_ID), turn_context()]);
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        write!(writer, "{}", token_count(100, 50, 10)).unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        writeln!(writer).unwrap();
+        writeln!(writer, "{}", token_count(250, 100, 30)).unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        let conn = lock_conn!(db.conn);
+        let totals: (i64, i64, i64) = conn.query_row(
+            "SELECT count(*), sum(input_tokens), sum(output_tokens) FROM proxy_request_logs",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(totals, (2, 250, 30));
+        Ok(())
+    }
+
+    #[test]
+    fn test_partial_live_record_is_retried_after_append() -> Result<(), AppError> {
+        use std::io::Write;
+        let db = Database::memory()?;
+        let dir = tempdir().unwrap();
+        let file = rollout_path(dir.path(), PARENT_ID);
+        write_jsonl(
+            &file,
+            &[
+                session_meta(PARENT_ID),
+                turn_context(),
+                token_count(100, 50, 10),
+            ],
+        );
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        let next = format!("{}\n", token_count(250, 100, 30));
+        let split = next.len() / 2;
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writer.write_all(&next.as_bytes()[..split]).unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 3);
+        assert_unchanged_codex_file_is_skipped(&db, &file)?;
+        writer.write_all(&next.as_bytes()[split..]).unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 1);
+        assert_eq!(sync_test_file(&db, &file, &[&file])?.imported, 0);
+        assert_eq!(get_sync_state(&db, &file.to_string_lossy())?.1, 4);
+        Ok(())
     }
 
     /// revert 产生的替换 rollout 是 `<threadId>_<rolloutId>` 双段文件名，

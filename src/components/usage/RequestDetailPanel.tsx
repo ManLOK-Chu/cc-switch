@@ -7,7 +7,12 @@ import {
 } from "@/components/ui/dialog";
 import { useRequestDetail } from "@/lib/query/usage";
 import { getFreshInputTokens, isUnpricedUsage } from "@/types/usage";
-import { fmtUsd, getLocaleFromLanguage, parseFiniteNumber } from "./format";
+import {
+  fmtUsd,
+  formatOutputTokensPerSecond,
+  getLocaleFromLanguage,
+  parseFiniteNumber,
+} from "./format";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -52,6 +57,7 @@ export function RequestDetailPanel({
   const multiplier = parseFiniteNumber(request.costMultiplier);
   const hasMultiplier = multiplier !== null && multiplier !== 1;
   const unpriced = isUnpricedUsage(request);
+  const outputTps = formatOutputTokensPerSecond(request);
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -175,6 +181,11 @@ export function RequestDetailPanel({
                 </dt>
                 <dd className="font-mono">
                   {request.outputTokens.toLocaleString()}
+                  {outputTps != null && (
+                    <span className="ml-2 text-xs text-muted-foreground font-normal">
+                      ({outputTps} tps)
+                    </span>
+                  )}
                 </dd>
               </div>
               <div>
